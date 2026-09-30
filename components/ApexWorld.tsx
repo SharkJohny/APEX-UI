@@ -6,15 +6,25 @@
  * cycle) → ReasoningWeb (verbatim copy from the app: circuit traces, orbit
  * rings, the full asymmetric roster, ambient motes) → OrbStatusBar (equalizer
  * + STANDBY cluster at the bottom).
- * Clicking any node opens the site's AGENT OVERVIEW window template; the
- * orb's tap cycle drives the whole web (standby → processing → speaking).
+ * Clicking any node opens that agent's live cockpit (status, recent jobs,
+ * example requests). Tapping the orb talks to Apex (useApexVoice); its voice
+ * state and the backend's trace events drive the web (standby → listening →
+ * processing → reasoning → speaking, consulted agents light up). The Command
+ * Deck drawer holds approvals, jobs, CRM, loops, memory, guide, integrations.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ApexHeroOrb, { type OrbState } from "./ApexHeroOrb";
 import ReasoningWebJs from "./ReasoningWeb";
 import ShaderBackgroundJs from "./ShaderBackground";
 import OrbStatusBar from "./OrbStatusBar";
+import ApexChatDock from "./ApexChatDock";
+import ApexDeck, { type DeckSection } from "./ApexDeck";
+import { useApexVoice } from "./useApexVoice";
+import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
+import { ROSTER, ROSTER_BY_KEY, type AgentStatus } from "@/lib/roster";
+
+const GOLD = "#f5a623";
 
 export type NodeSel = { name: string; key: string; color: string };
 
@@ -26,111 +36,49 @@ const ReasoningWeb = ReasoningWebJs as unknown as React.ComponentType<{
 const ShaderBackground = ShaderBackgroundJs as unknown as React.ComponentType<{
   opacity?: number; voiceActive?: boolean; gold?: boolean;
 }>;
-type AgentInfo = {
-  role: string;
-  caps: string[];
-  asks?: string[];
-  status: "online" | "standby" | "integration";
+type JobRow = { id: number; agent?: string; status?: string; source?: string; input?: string; output?: string; created_at?: string; finished_at?: string | null };
+
+const STATUS_LINE: Record<AgentStatus, { color: string; text: string }> = {
+  online: { color: "#34d399", text: "Online – Apex mu předává práci" },
+  standby: { color: "#c9a84c", text: "Pohotovost – připraven, zatím bez práce" },
+  integration: { color: "#7f9bb3", text: "Integrace – čeká na připojení služby" },
+  offline: { color: "#f87171", text: "Offline – nedostupný" },
 };
+const JOB_DOT: Record<string, string> = { running: GOLD, done: "#34d399", failed: "#f87171" };
 
-/* Mirrors the ROSTER in ReasoningWeb.jsx (a verbatim copy from the Apex app, so
-   it is not edited here). Backs the visually-hidden agent list that gives the
-   decorative SVG graph a keyboard and screen-reader equivalent - keep in sync if
-   the copy's roster changes. */
-export const ROSTER: { key: string; name: string; color: string }[] = [
-  { key: "chief_of_staff", name: "Chief of staff", color: "#00e5ff" },
-  { key: "memory",         name: "Memory",         color: "#00e5ff" },
-  { key: "strategist",     name: "Strategist",     color: "#00e5ff" },
-  { key: "researcher",     name: "Researcher",     color: "#00e5ff" },
-  { key: "finance",        name: "Finance",        color: "#00e5ff" },
-  { key: "editor",         name: "Editor",         color: "#00e5ff" },
-  { key: "sales",          name: "Sales",          color: "#f5a623" },
-  { key: "marketing",      name: "Marketing",      color: "#f5a623" },
-  { key: "ops",            name: "Ops",            color: "#f5a623" },
-  { key: "social_media",   name: "Social",         color: "#f5a623" },
-  { key: "engineering",    name: "Engineering",    color: "#f5a623" },
-  { key: "design",         name: "Design",         color: "#f5a623" },
-  { key: "developer",      name: "Developer",      color: "#f5a623" },
-  { key: "analytics",      name: "Analytics",      color: "#7f9bb3" },
-  { key: "crm",            name: "CRM",            color: "#7f9bb3" },
-  { key: "calendar",       name: "Calendar",       color: "#7f9bb3" },
-  { key: "email",          name: "Email",          color: "#7f9bb3" },
-  { key: "drive",          name: "Drive",          color: "#7f9bb3" },
-];
+const sectionLabel = (c: string): React.CSSProperties => ({
+  fontSize: 9, letterSpacing: "0.14em", color: `${c}99`, marginBottom: 8, fontFamily: "var(--font-mono)", textTransform: "uppercase",
+});
 
-/* Overview data per ReasoningWeb roster id - the site's template content */
-export const INFO: Record<string, AgentInfo> = {
-  chief_of_staff: { role: "Right hand - runs the day", status: "online",
-    caps: ["Prioritizes the day and keeps loose ends closed", "Routes every request to the right specialist", "Escalates only what truly needs a human"],
-    asks: ["What needs attention today?", "Chase the open quotes"] },
-  memory: { role: "Long-term memory", status: "online",
-    caps: ["Remembers every client, project and decision", "Feeds context into every task automatically", "Learns preferences over time"],
-    asks: ["What did we decide about X?", "History with this client"] },
-  strategist: { role: "Big-picture thinking", status: "online",
-    caps: ["Weekly strategy reviews", "Goal and milestone tracking", "Spots opportunities and risks early"],
-    asks: ["Where should we double down?"] },
-  researcher: { role: "Deep research", status: "online",
-    caps: ["Market and competitor research", "Technical deep-dives", "Source-checked summaries"],
-    asks: ["Research this market", "Compare these suppliers"] },
-  finance: { role: "Money watch", status: "online",
-    caps: ["Revenue and pipeline tracking", "Pricing sanity checks", "Monthly performance recaps"],
-    asks: ["How was this month?", "Is this quote priced right?"] },
-  editor: { role: "Quality gate", status: "online",
-    caps: ["Rewrites and tightens every draft", "Keeps the brand voice consistent", "Final pass before anything ships"],
-    asks: ["Polish this post", "Tighten this email"] },
-  sales: { role: "Deal closer", status: "online",
-    caps: ["Follow-ups for every lead", "Warm-outreach drafts", "Pipeline nudges so nothing goes cold"],
-    asks: ["Draft a follow-up", "Who went quiet?"] },
-  marketing: { role: "Growth engine", status: "online",
-    caps: ["Campaign generation", "Pricing analysis", "Brand positioning and content calendar"],
-    asks: ["Generate campaign", "Competitor research"] },
-  ops: { role: "Business operator", status: "online",
-    caps: ["Client quotes and proposals", "Project scoping and timelines", "Supplier sourcing"],
-    asks: ["Draft client quote", "Build project scope"] },
-  social_media: { role: "Voice of the brand", status: "online",
-    caps: ["Writes posts and captions", "Creates reel scripts", "Posts to Instagram, LinkedIn and Facebook"],
-    asks: ["Write post caption", "Plan content week"] },
-  engineering: { role: "Engineering brain", status: "online",
-    caps: ["3D-print settings and materials", "Tolerances and fit", "Laser power and speed guidance"],
-    asks: ["Review STL file", "Calculate tolerances"] },
-  design: { role: "Visual workshop", status: "online",
-    caps: ["Background removal and replacement", "Text overlays", "Resize for social media", "Filters and enhancement"],
-    asks: ["Remove background", "Resize for IG"] },
-  developer: { role: "Keeper of the build log", status: "standby",
-    caps: ["Keeps Apex's development log", "Recaps what shipped - day / week / month", "Future: builds Apex itself"],
-    asks: ["Recap last week"] },
-  analytics: { role: "Numbers feed", status: "integration",
-    caps: ["Performance metrics across every channel", "Feeds the weekly reviews"] },
-  crm: { role: "Client memory bank", status: "integration",
-    caps: ["Every lead and client in one pipeline", "Stage tracking from first contact to paid"] },
-  calendar: { role: "Schedule sense", status: "integration",
-    caps: ["Knows the calendar", "Reminders and follow-up timing"] },
-  email: { role: "Inbox hands", status: "integration",
-    caps: ["Inbox triage and reply drafts", "Connected and in use"] },
-  drive: { role: "File access", status: "integration",
-    caps: ["Reads and files documents", "Connected and in use"] },
-};
-
-const STATUS_LINE: Record<AgentInfo["status"], { color: string; text: string }> = {
-  online: { color: "#34d399", text: "Online - Apex routes work to it automatically" },
-  standby: { color: "#c9a84c", text: "Standby - in active development" },
-  integration: { color: "#7f9bb3", text: "Integration - wired into the core" },
-};
-
-/* ── AGENT OVERVIEW window - the site's template (the app opens live cockpits) ── */
-export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => void }) {
+/* ── AGENT COCKPIT - live card: role + caps (lib/roster), real status (/api/status),
+      the agent's last jobs (/api/deck) and one-click example requests. ── */
+export function AgentCockpit({ sel, live, refreshKey, onAsk, onClose }: {
+  sel: NodeSel; live?: AgentLive; refreshKey: number; onAsk: (prompt: string) => void; onClose: () => void;
+}) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ sx: number; sy: number } | null>(null);
-  const info = INFO[sel.key] ?? { role: "Specialist", status: "online" as const, caps: ["Part of the Apex core"] };
+  const dragListenersRef = useRef<{ move: (ev: MouseEvent) => void; up: () => void } | null>(null);
+  const [jobs, setJobs] = useState<JobRow[] | null>(null);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const info = ROSTER_BY_KEY[sel.key];
   const c = sel.color;
-  const status = STATUS_LINE[info.status];
+  const status = live ? STATUS_LINE[live.status] ?? STATUS_LINE.standby : null;
 
   useEffect(() => {
-    setPos({ x: Math.max(8, window.innerWidth / 2 - 170), y: Math.max(90, window.innerHeight * 0.16) });
+    setPos({ x: Math.max(8, Math.min(window.innerWidth - 368, window.innerWidth / 2 - 180)), y: Math.max(70, window.innerHeight * 0.12) });
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    let alive = true;
+    apiJson<unknown>(`/api/deck?section=jobs&agent=${encodeURIComponent(sel.key)}&limit=5`)
+      .then((d) => { if (alive) { setJobs(asList<JobRow>(d, "jobs").slice(0, 5)); setJobsError(null); } })
+      .catch((e: unknown) => { if (alive) setJobsError(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; };
+  }, [sel.key, refreshKey]);
 
   // Move focus into the window when it opens and hand it back on close, so the
   // keyboard does not stay stranded on the agent list behind it.
@@ -140,10 +88,10 @@ export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => v
     const opener = document.activeElement as HTMLElement | null;
     panelRef.current?.querySelector<HTMLElement>("button")?.focus();
     return () => { if (opener && document.contains(opener)) opener.focus(); };
-  }, [pos]);
+  }, [pos !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onMouseDown = (e: React.MouseEvent) => {
-    if (!pos) return;
+    if (!pos || (e.target as HTMLElement).closest("button")) return;
     dragRef.current = { sx: e.clientX - pos.x, sy: e.clientY - pos.y };
     const move = (ev: MouseEvent) => {
       if (dragRef.current) setPos({ x: ev.clientX - dragRef.current.sx, y: ev.clientY - dragRef.current.sy });
@@ -152,26 +100,38 @@ export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => v
       dragRef.current = null;
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
+      dragListenersRef.current = null;
     };
+    dragListenersRef.current = { move, up };
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   };
 
+  // The drag listeners above live on `document`, not this panel - if the
+  // cockpit closes (e.g. Esc) mid-drag the panel unmounts without a mouseup
+  // ever firing, leaking them. Remove them on unmount too.
+  useEffect(() => () => {
+    if (dragListenersRef.current) {
+      document.removeEventListener("mousemove", dragListenersRef.current.move);
+      document.removeEventListener("mouseup", dragListenersRef.current.up);
+      dragListenersRef.current = null;
+    }
+  }, []);
+
   if (!pos) return null;
   return (
-    <div ref={panelRef} role="dialog" aria-modal="true" aria-label={`${sel.name} overview`} style={{
+    <div ref={panelRef} role="dialog" aria-modal="true" aria-label={`${sel.name} – přehled agenta`} style={{
       position: "fixed", left: pos.x, top: pos.y,
-      width: "min(340px, 92vw)", zIndex: 60,
-      background: "rgba(4,3,12,0.92)",
-      backdropFilter: "blur(24px)",
-      border: `1px solid ${c}44`,
-      borderRadius: 16,
+      width: "min(360px, 92vw)", maxHeight: `calc(100vh - ${Math.max(0, pos.y) + 16}px)`, zIndex: 60,
+      display: "flex", flexDirection: "column",
+      background: "rgba(4,3,12,0.92)", backdropFilter: "blur(24px)",
+      border: `1px solid ${c}44`, borderRadius: 16,
       boxShadow: `0 0 40px ${c}18, 0 8px 32px rgba(0,0,0,0.6)`,
-      overflow: "hidden",
+      overflow: "hidden", color: "#f0ede8",
     }}>
       {/* header - drag handle */}
       <div onMouseDown={onMouseDown} style={{
-        display: "flex", alignItems: "center", gap: 10, padding: "14px 16px",
+        display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", flex: "none",
         borderBottom: `1px solid ${c}22`, cursor: "grab", userSelect: "none",
         background: `linear-gradient(135deg, ${c}0a 0%, transparent 100%)`,
       }}>
@@ -181,48 +141,93 @@ export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => v
         }}>
           <span style={{ width: 10, height: 10, borderRadius: "50%", background: c, boxShadow: `0 0 10px ${c}` }} />
         </div>
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.08em", color: c }}>{sel.name.toUpperCase()}</div>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: "0.06em", textTransform: "uppercase" }}>{info.role}</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", letterSpacing: "0.06em", textTransform: "uppercase" }}>{info?.role ?? "Specialista"}</div>
         </div>
-        <button onClick={onClose} aria-label="Close"
-          style={{ marginLeft: "auto", background: "none", border: "none", color: "rgba(255,255,255,0.3)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "6px 8px", transition: "color 0.2s" }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.75)")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.3)")}
+        <button type="button" onClick={onClose} aria-label="Zavřít"
+          style={{ marginLeft: "auto", background: "none", border: "none", color: "rgba(255,255,255,0.45)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "6px 8px" }}
         >×</button>
       </div>
 
-      <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
-        <div>
-          <div style={{ fontSize: 9, letterSpacing: "0.14em", color: `${c}99`, marginBottom: 8, fontFamily: "var(--font-mono)" }}>WHAT IT HANDLES</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {info.caps.map((cap) => (
-              <div key={cap} style={{ display: "flex", alignItems: "flex-start", gap: 7 }}>
-                <div style={{ width: 3, height: 3, borderRadius: "50%", background: `${c}99`, marginTop: 6, flexShrink: 0 }} />
-                <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", lineHeight: 1.55 }}>{cap}</span>
-              </div>
-            ))}
+      <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 16, overflowY: "auto", minHeight: 0 }}>
+        {/* live status */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <span style={{ width: 7, height: 7, marginTop: 4, flex: "none", borderRadius: "50%", background: status?.color ?? "#546a7d", boxShadow: status ? `0 0 8px ${status.color}` : "none" }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            <span style={{ fontSize: 9.5, letterSpacing: "0.1em", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", fontFamily: "var(--font-mono)" }}>
+              {status?.text ?? "Stav se načítá…"}
+            </span>
+            {live?.note && <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.45 }}>{live.note}</span>}
+            {live && (typeof live.jobs7d === "number" || live.lastJobAt) && (
+              <span style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-mono)" }}>
+                {typeof live.jobs7d === "number" ? `${live.jobs7d} úloh za 7 dní` : ""}
+                {live.lastJobAt ? ` · naposledy ${fmtTime(live.lastJobAt)}` : ""}
+              </span>
+            )}
           </div>
         </div>
 
-        {info.asks && info.asks.length > 0 && (
+        {info && (
           <div>
-            <div style={{ fontSize: 9, letterSpacing: "0.14em", color: `${c}99`, marginBottom: 8, fontFamily: "var(--font-mono)" }}>EXAMPLE REQUESTS</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {info.asks.map((task) => (
-                <span key={task} style={{
-                  padding: "4px 10px", background: `${c}0d`, border: `1px solid ${c}2a`,
-                  borderRadius: 20, fontSize: 10.5, color: `${c}cc`,
-                }}>{task}</span>
+            <div style={sectionLabel(c)}>Co umí</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {info.caps.map((cap) => (
+                <div key={cap} style={{ display: "flex", alignItems: "flex-start", gap: 7 }}>
+                  <div style={{ width: 3, height: 3, borderRadius: "50%", background: `${c}99`, marginTop: 7, flexShrink: 0 }} />
+                  <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.55 }}>{cap}</span>
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        <div style={{ display: "flex", alignItems: "center", gap: 7, borderTop: `1px solid ${c}1a`, paddingTop: 12 }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: status.color, boxShadow: `0 0 8px ${status.color}` }} />
-          <span style={{ fontSize: 9.5, letterSpacing: "0.1em", color: "rgba(255,255,255,0.45)", textTransform: "uppercase" }}>{status.text}</span>
+        <div>
+          <div style={sectionLabel(c)}>Poslední úlohy</div>
+          {jobsError && <p style={{ margin: 0, fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>{jobsError}</p>}
+          {!jobsError && jobs === null && <p style={{ margin: 0, fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>Načítám…</p>}
+          {!jobsError && jobs?.length === 0 && <p style={{ margin: 0, fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>Zatím žádná práce.</p>}
+          {jobs && jobs.length > 0 && (
+            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+              {jobs.map((j) => {
+                const expanded = open === j.id;
+                return (
+                  <li key={j.id} style={{ border: `1px solid ${c}1f`, borderRadius: 10, background: "rgba(255,255,255,0.02)" }}>
+                    <button type="button" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : j.id)} style={{
+                      display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 9px", textAlign: "left",
+                      background: "none", border: "none", color: "inherit", cursor: "pointer", font: "inherit",
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", flex: "none", background: JOB_DOT[j.status ?? ""] ?? "#7f9bb3" }} />
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "rgba(255,255,255,0.75)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {j.input || `Úloha #${j.id}`}
+                      </span>
+                      <span style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-mono)", flex: "none" }}>{fmtTime(j.created_at)}</span>
+                    </button>
+                    {expanded && (
+                      <div style={{ padding: "0 9px 9px", fontSize: 11.5, lineHeight: 1.5, color: "rgba(255,255,255,0.7)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 220, overflowY: "auto" }}>
+                        {j.output || (j.status === "running" ? "Pracuje se na tom…" : "Bez výstupu.")}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
+
+        {info?.asks && info.asks.length > 0 && (
+          <div>
+            <div style={sectionLabel(c)}>Zkus se zeptat</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {info.asks.map((task) => (
+                <button type="button" key={task} onClick={() => onAsk(task)} style={{
+                  padding: "4px 10px", background: `${c}0d`, border: `1px solid ${c}2a`, cursor: "pointer",
+                  borderRadius: 20, font: "inherit", fontSize: 10.5, color: `${c}dd`,
+                }}>{task}</button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -232,26 +237,23 @@ export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => v
 export default function ApexWorld() {
   const [selected, setSelected] = useState<NodeSel | null>(null);
   const [reduced, setReduced] = useState(false);
+  const [deck, setDeck] = useState<DeckSection | null>(null);
 
-  // A tap cycles idle → thinking → speaking → idle. That state drives the
-  // backdrop, the light-cast and the reasoning web's activity level.
-  const [showState, setShowState] = useState<OrbState>("idle");
-  const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const orbState: OrbState = showState;
-
-  const boost = () => {
-    const next: OrbState = showState === "idle" ? "thinking" : showState === "thinking" ? "speaking" : "idle";
-    setShowState(next);
-    if (showTimer.current) clearTimeout(showTimer.current);
-    showTimer.current = setTimeout(() => setShowState("idle"), 8000);
-  };
-  useEffect(() => () => { if (showTimer.current) clearTimeout(showTimer.current); }, []);
+  // The voice loop's state drives the backdrop, the light-cast and the
+  // reasoning web's activity level. A tap on the orb starts / ends listening.
+  const voice = useApexVoice();
+  const { status, refresh: refreshStatus } = useApexStatus(voice.dataVersion);
+  const orbState: OrbState = voice.state;
+  const pending = status ? status.pendingActions ?? 0 : voice.newActions;
 
   // Single entry point for opening an agent, shared by the SVG graph and the
   // hidden accessible list, so both routes behave identically.
   const openAgent = (n: NodeSel) => {
     setSelected(n);
   };
+  const closeAgent = useCallback(() => setSelected(null), []);
+  const openDeck = useCallback((section: DeckSection = "approvals") => { setSelected(null); setDeck(section); }, []);
+  const closeDeck = useCallback(() => setDeck(null), []);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -260,9 +262,6 @@ export default function ApexWorld() {
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
   }, []);
-
-  // orb tap cycle → the web's activity level (same states the app streams)
-  const webState = orbState === "thinking" ? "processing" : orbState === "speaking" ? "speaking" : "standby";
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden", userSelect: "none" }}>
@@ -282,24 +281,23 @@ export default function ApexWorld() {
       )}
 
       {/* cyan LIGHT-CAST - app copy exactly: mixBlendMode screen (only ever LIFTS the
-          navy, never darkens), brightens while speaking. The app has NO dark moat disc
-          in dark mode - that layer is its light-theme "reactor well" only. */}
+          navy, never darkens), brightens while speaking. */}
       <div aria-hidden="true" style={{
         position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none", mixBlendMode: "screen",
         background: `radial-gradient(circle at 50% 42%, rgba(13,210,255,${orbState === "speaking" ? 0.30 : 0.18}) 0%, rgba(13,170,228,0.08) 30%, rgba(8,17,31,0) 62%)`,
         transition: "background 0.6s ease",
       }} />
 
-      {/* the reasoning web - app z-order: web (z13) sits BELOW the orb canvas (z15),
-          so the bloom haze washes over the lines near the centre, exactly like the app */}
-      {/* ReasoningWeb is a verbatim copy from the Apex app: its 18 agent nodes are
-          imperative SVG hit-areas with no tabindex, inside an svg[role=img] that
-          collapses the whole graph into a single image. Rather than edit the copy,
-          the graph is marked decorative here and the same onSelect path is exposed
-          through the equivalent list of real buttons below. */}
+      {/* the reasoning web - app z-order: web sits BELOW the orb canvas, so the
+          bloom haze washes over the lines near the centre, exactly like the app.
+          ReasoningWeb is a verbatim copy from the Apex app: its 18 agent nodes are
+          imperative SVG hit-areas with no tabindex, so the graph is marked
+          decorative here and the same onSelect path is exposed through the
+          equivalent list of real buttons below. `trace` lights consulted agents. */}
       <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }}>
         <ReasoningWeb
-          state={webState}
+          state={voice.webState}
+          trace={voice.trace}
           mode="full"
           coreless
           onSelect={(n: NodeSel) => { openAgent(n); }}
@@ -307,12 +305,12 @@ export default function ApexWorld() {
       </div>
 
       {/* Keyboard and screen-reader equivalent of the agent graph. */}
-      <nav className="visually-hidden" aria-label="Apex agents">
+      <nav className="visually-hidden" aria-label="Agenti Apexu">
         <ul>
           {ROSTER.map((a) => (
             <li key={a.key}>
               <button type="button" onClick={() => openAgent({ key: a.key, name: a.name, color: a.color })}>
-                {a.name} - {INFO[a.key]?.role ?? "Specialist"}
+                {a.name} – {a.role}
               </button>
             </li>
           ))}
@@ -329,9 +327,9 @@ export default function ApexWorld() {
       <div
         role="button"
         tabIndex={0}
-        aria-label="Apex core - tap to energize"
-        onClick={boost}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); boost(); } }}
+        aria-label={orbState === "listening" ? "Apex - přestat poslouchat" : "Apex - klepni a mluv"}
+        onClick={voice.tap}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); voice.tap(); } }}
         onMouseDown={(e) => e.preventDefault()}
         style={{
           position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
@@ -343,7 +341,27 @@ export default function ApexWorld() {
       {/* equalizer + STANDBY cluster */}
       <OrbStatusBar state={orbState} />
 
-      {selected && <AgentOverview sel={selected} onClose={() => setSelected(null)} />}
+      <ApexChatDock voice={voice} pending={pending} onOpenDeck={openDeck} />
+
+      {selected && (
+        <AgentCockpit
+          key={selected.key}
+          sel={selected}
+          live={status?.agents[selected.key]}
+          refreshKey={voice.dataVersion}
+          onAsk={(prompt) => { setSelected(null); void voice.send(prompt); }}
+          onClose={closeAgent}
+        />
+      )}
+
+      <ApexDeck
+        section={deck}
+        onSection={setDeck}
+        onClose={closeDeck}
+        status={status}
+        refreshKey={voice.dataVersion}
+        onChanged={refreshStatus}
+      />
     </div>
   );
 }

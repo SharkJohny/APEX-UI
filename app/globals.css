@@ -55,3 +55,141 @@ body {
 @media (max-width: 700px) {
   .sb-hint { display: none; }
 }
+
+/* ── Command Deck drawer (components/ApexDeck.tsx) ── */
+.deck {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 70;
+  width: min(560px, 100vw);
+  display: flex; flex-direction: column;
+  background: rgba(6, 13, 24, 0.92); backdrop-filter: blur(16px);
+  border-left: 1px solid rgba(240, 237, 232, 0.14);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+  color: #f0ede8; font-size: 13.5px;
+  user-select: text;
+}
+@media (max-width: 640px) { .deck { width: 100vw; border-left: none; } }
+.deck-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; }
+.deck-brand {
+  flex: 1; margin: 0; font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.22em; text-transform: uppercase; color: #f5a623;
+}
+.deck-icon, .deck-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: 10px; border: 1px solid rgba(240, 237, 232, 0.16);
+  background: rgba(240, 237, 232, 0.05); color: rgba(240, 237, 232, 0.88);
+  cursor: pointer; font: inherit; text-decoration: none;
+}
+.deck-icon { width: 32px; height: 32px; flex: none; }
+.deck-btn { padding: 6px 12px; font-size: 12.5px; min-height: 30px; }
+.deck-btn-sm { padding: 4px 9px; font-size: 11.5px; min-height: 26px; flex: none; }
+.deck-btn:disabled, .deck-icon:disabled { opacity: 0.45; cursor: default; }
+.deck-btn:hover:not(:disabled), .deck-icon:hover { border-color: rgba(240, 237, 232, 0.32); }
+.deck-btn-gold { border-color: rgba(245, 166, 35, 0.55); background: rgba(245, 166, 35, 0.14); color: #ffd080; }
+.deck-btn-cyan { border-color: rgba(13, 210, 255, 0.55); background: rgba(13, 210, 255, 0.14); color: #7df1ff; }
+.deck-icon:focus-visible, .deck-btn:focus-visible, .deck-tab:focus-visible, .deck-rowbtn:focus-visible,
+.deck-input:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
+.deck-tabs {
+  display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 10px;
+  border-bottom: 1px solid rgba(240, 237, 232, 0.1);
+}
+.deck-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid transparent;
+  background: none; color: rgba(240, 237, 232, 0.6); cursor: pointer;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+}
+.deck-tab:hover { color: #f0ede8; }
+.deck-tab[aria-current="page"] { color: #0dd2ff; border-color: rgba(13, 210, 255, 0.35); background: rgba(13, 210, 255, 0.08); }
+.deck-badge, .dock-badge {
+  min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+  display: inline-grid; place-items: center;
+  background: #f5a623; color: #04080f; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0;
+}
+.deck-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px 24px; }
+.deck-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.deck-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.deck-compact { gap: 4px; }
+.deck-card {
+  padding: 10px 12px; border-radius: 12px; min-width: 0;
+  border: 1px solid rgba(240, 237, 232, 0.1); background: rgba(240, 237, 232, 0.03);
+}
+.deck-card-hot { border-color: rgba(245, 166, 35, 0.4); background: rgba(245, 166, 35, 0.05); }
+.deck-card > * + * { margin-top: 8px; }
+.deck-card.deck-row > * + *, .deck-card.deck-stack > * + * { margin-top: 0; }
+.deck-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.deck-wrap { flex-wrap: wrap; }
+.deck-actions { flex-wrap: wrap; }
+.deck-grow { flex: 1; min-width: 0; }
+.deck-min { min-width: 0; }
+.deck-none { flex: none; }
+.deck-full { flex-basis: 100%; }
+.deck-pad { padding: 4px 2px 2px; }
+.deck-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-rowbtn {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; min-width: 0;
+  background: none; border: none; color: inherit; cursor: pointer; font: inherit; text-align: left;
+}
+.deck-label {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: rgba(13, 210, 255, 0.75);
+}
+.deck-h { margin: 6px 0 0; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(240, 237, 232, 0.85); }
+.deck-card .deck-h { margin: 0; }
+.deck-title { margin: 0; font-size: 13.5px; line-height: 1.4; color: #f0ede8; overflow-wrap: anywhere; }
+.deck-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: rgba(240, 237, 232, 0.78); white-space: pre-wrap; overflow-wrap: anywhere; }
+.deck-meta { margin: 0; font-size: 11.5px; color: rgba(240, 237, 232, 0.5); overflow-wrap: anywhere; }
+.deck-mono { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere; }
+.deck-note { margin: 0; font-size: 12px; line-height: 1.5; color: rgba(240, 237, 232, 0.6); }
+.deck-err { color: #ff9b9b; }
+.deck-ok { color: #6ee7b7; }
+.deck-warn { color: #ffd080; }
+.deck-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.deck-inline { flex-direction: row; align-items: center; gap: 10px; }
+.deck-input {
+  width: 100%; min-width: 0; padding: 7px 10px; border-radius: 9px; font: inherit; font-size: 13px;
+  background: rgba(240, 237, 232, 0.06); color: #f0ede8; border: 1px solid rgba(240, 237, 232, 0.16);
+  resize: vertical;
+}
+.deck-input option { color: #111; }
+.deck-inline .deck-input { width: auto; flex: 1; }
+.deck-select-sm { width: auto; flex: none; padding: 4px 8px; font-size: 12px; }
+.deck-pre {
+  margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; max-height: 260px; overflow: auto;
+  background: rgba(0, 0, 0, 0.3); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: rgba(240, 237, 232, 0.8);
+}
+.deck-details summary { cursor: pointer; font-size: 12px; color: rgba(240, 237, 232, 0.6); }
+.deck-pill {
+  flex: none; padding: 2px 8px; border-radius: 10px; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid rgba(240, 237, 232, 0.2); color: rgba(240, 237, 232, 0.7);
+}
+.deck-pill-pending { border-color: rgba(245, 166, 35, 0.5); color: #ffd080; }
+.deck-pill-executed, .deck-pill-approved { border-color: rgba(52, 211, 153, 0.5); color: #6ee7b7; }
+.deck-pill-failed { border-color: rgba(248, 113, 113, 0.5); color: #ff9b9b; }
+.deck-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #7f9bb3; }
+.deck-dot-running { background: #f5a623; box-shadow: 0 0 6px #f5a623; }
+.deck-dot-done, .deck-dot-executed, .deck-dot-ok { background: #34d399; }
+.deck-dot-failed, .deck-dot-error { background: #f87171; }
+.deck-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.deck-kpi { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(240, 237, 232, 0.1); background: rgba(240, 237, 232, 0.03); }
+
+/* ── Chat dock activity chips (components/ApexChatDock.tsx) ── */
+.dock-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dock-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 3px 9px; border-radius: 14px; font-size: 11.5px; line-height: 1.4;
+  border: 1px solid rgba(240, 237, 232, 0.16); background: rgba(240, 237, 232, 0.04); color: rgba(240, 237, 232, 0.8);
+  font-family: inherit;
+}
+.dock-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-chip-running { border-color: rgba(245, 166, 35, 0.45); color: #ffd080; }
+.dock-chip-done { border-color: rgba(52, 211, 153, 0.4); color: #6ee7b7; }
+.dock-chip-failed, .dock-chip-error { border-color: rgba(248, 113, 113, 0.45); color: #ff9b9b; }
+.dock-chip-action { border-color: rgba(13, 210, 255, 0.45); color: #7df1ff; cursor: pointer; }
+.dock-chip-action:hover { background: rgba(13, 210, 255, 0.1); }
+.dock-chip-info { color: rgba(240, 237, 232, 0.6); white-space: normal; }
+.dock-chip-info span { white-space: normal; }
+.dock-chip:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
+@keyframes dockSpin { to { transform: rotate(360deg); } }
+.dock-spin { animation: dockSpin 1s linear infinite; flex: none; }
+@media (prefers-reduced-motion: reduce) { .dock-spin { animation: none; } }
