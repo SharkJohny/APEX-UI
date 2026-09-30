@@ -215,6 +215,11 @@ const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // Context size of the stored CLI session after its last turn (tokens) - a
+  // session over the cap starts over with a short transcript.
+  `
+  ALTER TABLE conversations ADD COLUMN ctx_tokens INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function migrate(db: DatabaseSync) {

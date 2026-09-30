@@ -113,6 +113,7 @@ const GROUPS: GroupDef[] = [
       { key: "ANTHROPIC_API_KEY", label: "Anthropic API klíč", type: "secret", format: { re: /^sk-ant-[A-Za-z0-9_-]{20,}$/, hint: "Anthropic klíče obvykle začínají „sk-ant-“." }, help: "Placené API – jen chat bez nástrojů. S předplatným Claude ho nepotřebuješ." },
       { key: "ANTHROPIC_MODEL", label: "Anthropic API – model", type: "text", pattern: MODEL_ID, default: "claude-sonnet-5", options: opts("claude-opus-5-5", "claude-sonnet-5") },
       { key: "APEX_LLM_TIMEOUT_MS", label: "Časový limit jednoho volání modelu", type: "number", min: 60_000, max: 7_200_000, default: "600000", help: "V minutách (1–120). Platí od další úlohy." },
+      { key: "APEX_SESSION_MAX_TOKENS", label: "Strop kontextu rozhovoru (tokeny)", type: "number", min: 20_000, max: 400_000, default: "70000", help: "Když paměť jednoho rozhovoru v CLI přeroste tuto velikost, Apex založí novou relaci jen se stručným výpisem posledních zpráv. Nižší = levnější tahy, vyšší = delší přesná paměť." },
     ],
     actions: [
       { id: "test-openai", label: "Otestovat OpenAI klíč", test: "openai" },

@@ -80,8 +80,9 @@ export type LlmRequest = {
   session?: { id: string; resume: boolean; cwd: string };
 };
 
-/* sessionId: the CLI session this call ran in (codex assigns its own). */
-export type LlmResult = { text: string; costUsd?: number; sessionId?: string };
+/* sessionId: the CLI session this call ran in (codex assigns its own).
+ * contextTokens: how big the session's context was at the end of the call. */
+export type LlmResult = { text: string; costUsd?: number; sessionId?: string; contextTokens?: number };
 
 /* The stored CLI session can't be resumed (deleted, expired, corrupt) - the
  * caller should start over with a fresh session and the transcript. */
@@ -225,8 +226,13 @@ async function runClaude(req: LlmRequest): Promise<LlmResult> {
   let text = "";
   let final = "";
   let costUsd: number | undefined;
+  let contextTokens: number | undefined;
   await runCli("claude", args, req.prompt, (ev) => {
-    if (ev.type === "stream_event" && ev.event?.type === "content_block_delta" && ev.event.delta?.type === "text_delta") {
+    if (ev.type === "stream_event" && ev.event?.type === "message_start" && ev.event.message?.usage) {
+      // each model request re-reads the whole context: the last one is the session's size
+      const u = ev.event.message.usage;
+      contextTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+    } else if (ev.type === "stream_event" && ev.event?.type === "content_block_delta" && ev.event.delta?.type === "text_delta") {
       text += ev.event.delta.text;
       req.onToken?.(ev.event.delta.text);
     } else if (ev.type === "stream_event" && ev.event?.type === "content_block_start" && text && !text.endsWith("\n")) {
@@ -239,7 +245,7 @@ async function runClaude(req: LlmRequest): Promise<LlmResult> {
       if (ev.is_error) throw new CliError(String(ev.result || (Array.isArray(ev.errors) && ev.errors.join("; ")) || "Claude vrátil chybu."));
     }
   }, req.signal, env, req.timeoutMs, req.session?.cwd);
-  return { text: (final || text).trim(), costUsd, sessionId: req.session?.id };
+  return { text: (final || text).trim(), costUsd, sessionId: req.session?.id, contextTokens };
 }
 
 const CODEX_DISABLED = [
@@ -280,9 +286,13 @@ async function runCodex(req: LlmRequest): Promise<LlmResult> {
 
   const parts: string[] = [];
   let threadId: string | undefined;
+  let contextTokens: number | undefined;
   await runCli("codex", args, `<system>\n${req.system}\n</system>\n\n${req.prompt}`, (ev) => {
     if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
       threadId = ev.thread_id;
+    } else if (ev.type === "turn.completed" && typeof ev.usage?.input_tokens === "number") {
+      // summed over the turn's requests - an upper bound, so the session rotates a bit early
+      contextTokens = ev.usage.input_tokens;
     } else if (ev.type === "item.completed" && ev.item?.type === "agent_message" && ev.item.text) {
       const t = (parts.length ? "\n" : "") + ev.item.text;
       parts.push(ev.item.text);
@@ -291,7 +301,7 @@ async function runCodex(req: LlmRequest): Promise<LlmResult> {
       throw new CliError(String(ev.message || ev.error?.message || "Codex vrátil chybu."));
     }
   }, req.signal, {}, req.timeoutMs, s?.cwd);
-  return { text: parts.join("\n").trim(), sessionId: s ? threadId ?? (s.resume ? s.id : undefined) : undefined };
+  return { text: parts.join("\n").trim(), sessionId: s ? threadId ?? (s.resume ? s.id : undefined) : undefined, contextTokens };
 }
 
 async function runGemini(req: LlmRequest): Promise<LlmResult> {

@@ -78,14 +78,14 @@ const PERSONA_FILES = ["80-me/profil.md", "80-me/preference.md", "80-me/feedback
 const PERSONA_BUDGET = 12_000;
 
 /* The persona layer every agent reads first (SCHEMA §14.1), trimmed to a budget. */
-export function vaultPersona(): string {
+export function vaultPersona(budget = PERSONA_BUDGET): string {
   if (!vaultDir()) return "";
   const parts: string[] = [];
   let used = 0;
   for (const f of PERSONA_FILES) {
     try {
       const body = readVaultText(f).replace(/^---[\s\S]*?---\n/, "").trim();
-      const room = PERSONA_BUDGET - used;
+      const room = budget - used;
       if (room <= 200) break;
       const text = body.length > room ? body.slice(0, room) + "\n…" : body;
       parts.push(`### ${f}\n${text}`);

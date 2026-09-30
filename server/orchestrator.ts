@@ -17,6 +17,13 @@ import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 const HISTORY_TURNS = 12;
+/* A transcript replays each old message only up to this length (the latest
+ * user message is always whole); older detail is a conversation_read away. */
+const TRANSCRIPT_MSG_MAX = 800;
+/* A resumed CLI session re-reads everything it holds on every turn, tool
+ * results included. Past this size the conversation starts a fresh session
+ * seeded with a short transcript instead (Settings: APEX_SESSION_MAX_TOKENS). */
+const sessionMaxTokens = () => Number(process.env.APEX_SESSION_MAX_TOKENS) || 70_000;
 
 
 /* Each run owns an AbortController that follows its parent's signal. When a
@@ -64,10 +71,14 @@ const VAULT_RULES = `Znalostní báze majitele "AI Mozek" (Obsidian, metoda LLM 
 - Klienti, projekty, úkoly, hodiny a faktury: zdrojem pravdy je Raqeto CRM (nástroje raqeto_*); vault drží kontext, shrnutí hovorů, know-how a poptávky.
 - Do vaultu zapisuješ jen návrhem propose_vault_write podle pravidel SCHEMA.md (shrnutí → aktualizace entit → index → záznam do logu); 00-raw a "ústavu" (SCHEMA, 80-me/profil, 80-me/preference) nikdy neměníš. Nic nepřidávej "z hlavy" – vše musí mít zdroj.`;
 
-function contextBlocks(query: string): string[] {
+/* Specialists get the owner's profile trimmed harder than the chief: they
+ * work on a narrow task and every delegation pays for the prompt again. */
+const SPECIALIST_PERSONA_BUDGET = 4_000;
+
+function contextBlocks(query: string, personaBudget?: number): string[] {
   const guide = latestGuide();
   const memory = relevantMemory(query);
-  const persona = vaultDir() ? vaultPersona() : "";
+  const persona = vaultDir() ? vaultPersona(personaBudget) : "";
   return [
     persona && `Kdo je majitel a jak s ním pracovat (vrstva 80-me z jeho vaultu – ber jako závazné):\n${persona}`,
     persona && VAULT_RULES,
@@ -144,7 +155,7 @@ function turnUpdate(query: string): string {
 function transcript(messages: ChatMessage[]): string {
   const recent = messages.slice(-HISTORY_TURNS);
   if (recent.length === 1) return recent[0].content;
-  const lines = recent.slice(0, -1).map((m) => `${m.role === "user" ? "Uživatel" : "Apex"}: ${m.content}`);
+  const lines = recent.slice(0, -1).map((m) => `${m.role === "user" ? "Uživatel" : "Apex"}: ${clip(m.content, TRANSCRIPT_MSG_MAX)}`);
   return `Dosavadní konverzace:\n${lines.join("\n")}\n\nNová zpráva uživatele: ${recent[recent.length - 1].content}`;
 }
 
@@ -155,7 +166,7 @@ function transcript(messages: ChatMessage[]): string {
 const SESSION_PROVIDERS = new Set(["claude", "codex"]);
 export const SESSIONS_DIR = join(DATA_DIR, "sessions");
 
-type ConversationRow = { id: string; provider: string; session_id: string; cwd: string };
+type ConversationRow = { id: string; provider: string; session_id: string; cwd: string; ctx_tokens: number };
 
 function sessionCwd(conversationId: string): string | undefined {
   // the id comes from the browser - it becomes a directory name
@@ -189,7 +200,7 @@ export async function runTurn(opts: {
   try {
     const cwd = SESSION_PROVIDERS.has(opts.provider) ? sessionCwd(conversationId) : undefined;
     const stored = cwd ? get<ConversationRow>("SELECT * FROM conversations WHERE id = ?", conversationId) : undefined;
-    const resumable = stored?.provider === opts.provider && stored.session_id ? stored : undefined;
+    const resumable = stored?.provider === opts.provider && stored.session_id && stored.ctx_tokens < sessionMaxTokens() ? stored : undefined;
     const pending = pendingBlock();
     const past = fresh && !resumable ? await pastBlock(last.content, conversationId) : "";
     const system = systemPrompt("chief_of_staff", [...contextBlocks(last.content), pending, past]);
@@ -216,10 +227,10 @@ export async function runTurn(opts: {
       out = await call(undefined);
     }
     if (cwd && out.sessionId) {
-      dbRun(`INSERT INTO conversations (id, provider, session_id, cwd) VALUES (?,?,?,?)
+      dbRun(`INSERT INTO conversations (id, provider, session_id, cwd, ctx_tokens) VALUES (?,?,?,?,?)
              ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, session_id = excluded.session_id,
-               cwd = excluded.cwd, updated_at = datetime('now')`,
-        conversationId, opts.provider, out.sessionId, cwd);
+               cwd = excluded.cwd, ctx_tokens = excluded.ctx_tokens, updated_at = datetime('now')`,
+        conversationId, opts.provider, out.sessionId, cwd, out.contextTokens ?? 0);
     }
     if (out.text) dbRun("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)", conversationId, "assistant", out.text);
     opts.emit({ t: "done", conversationId });
@@ -273,7 +284,7 @@ export async function runSpecialist(opts: {
       provider: opts.provider,
       agent: opts.agent,
       system: systemPrompt(opts.agent, [
-        ...contextBlocks(opts.task),
+        ...contextBlocks(opts.task, SPECIALIST_PERSONA_BUDGET),
         run.depth > 0
           ? "Pracuješ na zadání od Chief of staffa. Tvůj výstup čte on, ne uživatel – může být podrobnější a strukturovaný (prostý text)."
           : "Pracuješ samostatně (naplánovaná úloha). Výstup si uživatel přečte v přehledu úloh.",
