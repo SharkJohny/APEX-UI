@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, RefreshCw, Settings } from "lucide-react";
+import { X, RefreshCw, Settings, Copy, Check } from "lucide-react";
 import { ROSTER, ROSTER_BY_KEY } from "@/lib/roster";
 import { apiJson, asList, fmtTime, type ApexStatus } from "./useApexStatus";
 
@@ -57,6 +57,58 @@ function useDeckData<T>(url: string, reloadKey: string) {
   return { data, error, loading, reload };
 }
 
+/* Copy to the clipboard; falls back to a hidden textarea + execCommand where
+ * the async clipboard API is missing, refused or never settles (unfocused
+ * window) - the fallback still runs inside the click's user activation. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      const ok = await Promise.race([
+        navigator.clipboard.writeText(text).then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 800)),
+      ]);
+      if (ok) return true;
+    }
+  } catch { /* fall through to the textarea path */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-1000px;left:-1000px;opacity:0";
+  const prev = document.activeElement as HTMLElement | null;
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  prev?.focus?.();
+  return ok;
+}
+
+/* Small copy button with 1.5 s "Zkopírováno" feedback. `text` may be lazy. */
+export function CopyButton({ text, label = "Kopírovat", title, className = "copy-btn", iconSize = 12, showLabel = false, style }: {
+  text: string | (() => string); label?: string; title?: string; className?: string; iconSize?: number; showLabel?: boolean; style?: React.CSSProperties;
+}) {
+  const [state, setState] = useState<"idle" | "ok" | "err">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const onClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const ok = await copyText(typeof text === "function" ? text() : text);
+    setState(ok ? "ok" : "err");
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), 1500);
+  };
+  const feedback = state === "ok" ? "Zkopírováno" : state === "err" ? "Nepodařilo se zkopírovat" : "";
+  return (
+    <button type="button" className={className} style={style} onClick={(e) => void onClick(e)}
+      aria-label={feedback || label} title={feedback || title || label} data-copied={state === "ok" ? "true" : undefined}>
+      {state === "ok" ? <Check size={iconSize} aria-hidden="true" /> : <Copy size={iconSize} aria-hidden="true" />}
+      {(showLabel || state !== "idle") && <span className="copy-fb">{feedback || label}</span>}
+      <span className="visually-hidden" role="status">{feedback}</span>
+    </button>
+  );
+}
+
 function deckOp<T = unknown>(op: string, args: Json): Promise<T> {
   return apiJson<T>("/api/deck", { method: "POST", body: JSON.stringify({ op, ...args }) });
 }
@@ -82,8 +134,8 @@ function State({ loading, error, empty, emptyText }: { loading: boolean; error: 
 
 /* ─────────────────────────── Schválení ─────────────────────────── */
 
-type ActionRow = { id: number; kind: string; summary: string; payload: string; agent: string; status: string; evidence?: string; error?: string; created_at?: string; decided_at?: string | null };
-type KindRow = { kind: string; label: string; ready: boolean | string };  // true, or the reason it is not ready
+export type ActionRow = { id: number; kind: string; summary: string; payload: string; agent: string; status: string; evidence?: string; error?: string; created_at?: string; decided_at?: string | null };
+type KindRow = { kind: string; label: string; ready: boolean | string | null };  // true/null = ready, else the reason it is not
 
 const EDITABLE: Record<string, { label: string; long?: boolean }> = {
   to: { label: "Komu" }, cc: { label: "Kopie" }, subject: { label: "Předmět" },
@@ -94,13 +146,13 @@ const EDITABLE: Record<string, { label: string; long?: boolean }> = {
 };
 const ACTION_STATUS: Record<string, string> = { pending: "čeká", approved: "schváleno", rejected: "zamítnuto", executed: "provedeno", failed: "selhalo" };
 
-function parsePayload(p: unknown): Json {
+export function parsePayload(p: unknown): Json {
   if (p && typeof p === "object") return p as Json;
   try { const v = JSON.parse(String(p)); return v && typeof v === "object" ? (v as Json) : { value: v }; } catch { return { value: str(p) }; }
 }
 
 /* A unified diff, +/- lines colored; read-only. */
-function DiffBlock({ diff }: { diff: string }) {
+export function DiffBlock({ diff }: { diff: string }) {
   return (
     <pre className="deck-pre deck-diff" style={{ maxHeight: 320, whiteSpace: "pre-wrap" }}>
       {diff.replace(/\n$/, "").split("\n").map((line, i) => {
@@ -118,7 +170,7 @@ const VAULT_MODE: Record<string, string> = { create: "nová stránka", replace: 
 type VaultPreview = { path: string; mode: string; diff: string };
 
 /* vault_write: reason + exact diff per file. Approve/reject only - no inline edits. */
-function VaultWriteView({ payload }: { payload: Json }) {
+export function VaultWriteView({ payload }: { payload: Json }) {
   const preview = Array.isArray(payload.preview) ? (payload.preview as VaultPreview[]) : [];
   const files = Array.isArray(payload.files) ? (payload.files as { path?: string; mode?: string }[]) : [];
   return (
@@ -151,7 +203,7 @@ const FIELD_LABEL: Record<string, string> = {
 const htmlText = (h: string) => h.replace(/<\/(p|h\d|li|div)>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 
 /* Readable key → value list (Raqeto actions). */
-function FieldList({ data }: { data: Json }) {
+export function FieldList({ data }: { data: Json }) {
   return (
     <div className="deck-stack">
       {Object.entries(data).filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => (
@@ -166,11 +218,60 @@ function FieldList({ data }: { data: Json }) {
   );
 }
 
+/* deferred_tool: a tool call the safety guard held back ({tool, args, agent, reason, label?}). */
+export function DeferredToolView({ payload }: { payload: Json }) {
+  const args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? (payload.args as Json) : null;
+  return (
+    <div className="deck-stack">
+      {str(payload.label) && <p className="deck-text">{str(payload.label)}</p>}
+      <p className="deck-meta">Nástroj <span className="deck-mono">{str(payload.tool) || "?"}</span>{str(payload.agent) ? ` · agent ${agentName(str(payload.agent))}` : ""}</p>
+      {str(payload.reason) && (
+        <div className="deck-field">
+          <span className="deck-label">Proč čeká na schválení</span>
+          <span className="deck-text">{str(payload.reason)}</span>
+        </div>
+      )}
+      {args && Object.keys(args).length > 0 && (
+        <div className="deck-field">
+          <span className="deck-label">Parametry</span>
+          <FieldList data={args} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const MESSAGE_KEYS = ["to", "cc", "subject", "summary", "start", "end", "location", "body", "text", "message", "caption", "content", "description"];
+
+/* Readable, read-only payload for the chat dock's inline approval. */
+export function ActionDetails({ kind, payload }: { kind: string; payload: Json }) {
+  if (kind === "vault_write") return <VaultWriteView payload={payload} />;
+  if (kind === "deferred_tool") return <DeferredToolView payload={payload} />;
+  if (kind.startsWith("raqeto_")) return <FieldList data={payload} />;
+  const main = MESSAGE_KEYS.filter((k) => typeof payload[k] === "string" && payload[k]);
+  if (!main.length) return <FieldList data={payload} />;
+  return (
+    <div className="deck-stack">
+      {main.map((k) => (
+        <div key={k} className="deck-field">
+          <span className="deck-label">{EDITABLE[k]?.label ?? k}</span>
+          <span className="deck-text">{str(payload[k])}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* Tells the chat dock, the Deck and the status badge that an action changed. */
+export const ACTIONS_CHANGED = "apex:actions-changed";
+export const notifyActionsChanged = () => window.dispatchEvent(new Event(ACTIONS_CHANGED));
+
 function ActionCard({ a, kind, onDone }: { a: ActionRow; kind?: KindRow; onDone: () => void }) {
   const payload = useMemo(() => parsePayload(a.payload), [a.payload]);
   const isVault = a.kind === "vault_write";
   const isRaqeto = a.kind.startsWith("raqeto_");
-  const editKeys = isVault ? [] : Object.keys(payload).filter((k) => EDITABLE[k] && typeof payload[k] === "string");
+  const isDeferred = a.kind === "deferred_tool";
+  const editKeys = isVault || isDeferred ? [] : Object.keys(payload).filter((k) => EDITABLE[k] && typeof payload[k] === "string");
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ActionRow | null>(null);
   const { busy, error, run } = useOp();
@@ -184,7 +285,7 @@ function ActionCard({ a, kind, onDone }: { a: ActionRow; kind?: KindRow; onDone:
     const r = await apiJson<ActionRow | { action?: ActionRow }>(`/api/actions/${a.id}`, { method: "POST", body: JSON.stringify(body) });
     const next = r && typeof r === "object" && "action" in r && r.action ? r.action : (r as ActionRow);
     if (next && typeof next === "object" && "status" in next) setResult(next);
-  }, onDone);
+  }, () => { onDone(); notifyActionsChanged(); });
 
   return (
     <article className={`deck-card${pending ? " deck-card-hot" : ""}`}>
@@ -194,7 +295,7 @@ function ActionCard({ a, kind, onDone }: { a: ActionRow; kind?: KindRow; onDone:
       </header>
       <p className="deck-title">{a.summary}</p>
       <p className="deck-meta">{agentName(a.agent)} · {fmtTime(a.created_at)}{row.decided_at ? ` · rozhodnuto ${fmtTime(row.decided_at)}` : ""}</p>
-      {pending && kind && kind.ready !== true && (
+      {pending && kind && (kind.ready === false || (typeof kind.ready === "string" && !!kind.ready)) && (
         <p className="deck-note deck-warn">{typeof kind.ready === "string" && kind.ready ? kind.ready : "Integrace pro tuto akci není připravená – provedení by selhalo. Zkontroluj záložku Integrace."}</p>
       )}
 
@@ -211,8 +312,9 @@ function ActionCard({ a, kind, onDone }: { a: ActionRow; kind?: KindRow; onDone:
         );
       })}
       {isVault && <VaultWriteView payload={payload} />}
+      {isDeferred && <DeferredToolView payload={payload} />}
       {isRaqeto && Object.keys(rest).length > 0 && <FieldList data={rest} />}
-      {!isVault && !isRaqeto && Object.keys(rest).length > 0 && (
+      {!isVault && !isRaqeto && !isDeferred && Object.keys(rest).length > 0 && (
         <details className="deck-details" open={pending && editKeys.length === 0}>
           <summary>Data akce</summary>
           <pre className="deck-pre">{JSON.stringify(rest, null, 2)}</pre>
@@ -230,7 +332,12 @@ function ActionCard({ a, kind, onDone }: { a: ActionRow; kind?: KindRow; onDone:
         </div>
       ) : (
         <>
-          {row.evidence && <p className="deck-note deck-ok">Důkaz: <span className="deck-mono">{row.evidence}</span></p>}
+          {row.evidence && (
+            <div className="deck-row deck-wrap">
+              <p className="deck-note deck-ok deck-grow">Důkaz: <span className="deck-mono">{row.evidence}</span></p>
+              <CopyButton text={row.evidence} label="Kopírovat důkaz" />
+            </div>
+          )}
           {row.error && <p className="deck-note deck-err">{row.error}</p>}
         </>
       )}
@@ -294,7 +401,10 @@ function JobsTab({ reloadKey }: { reloadKey: string }) {
                   <p className="deck-meta">#{j.id} · {j.status} · zdroj: {j.source || "–"}{j.finished_at ? ` · hotovo ${fmtTime(j.finished_at)}` : ""}</p>
                   <div className="deck-label">Zadání</div>
                   <p className="deck-text">{j.input}</p>
-                  <div className="deck-label">Výstup</div>
+                  <div className="deck-row">
+                    <div className="deck-label deck-grow">Výstup</div>
+                    {j.output && <CopyButton text={j.output} label="Kopírovat výstup" />}
+                  </div>
                   <p className="deck-text">{j.output || (j.status === "running" ? "Pracuje se na tom…" : "Bez výstupu.")}</p>
                 </div>
               )}
@@ -1280,6 +1390,14 @@ export default function ApexDeck({ section, onSection, onClose, status, refreshK
 
   // Integrations read /api/status; refresh it with the drawer's own clock too.
   useEffect(() => { if (open && tick) onChanged(); }, [open, tick, onChanged]);
+
+  // An approval decided in the chat dock → refetch the open tab.
+  useEffect(() => {
+    if (!open) return;
+    const bump = () => setTick((x) => x + 1);
+    window.addEventListener(ACTIONS_CHANGED, bump);
+    return () => window.removeEventListener(ACTIONS_CHANGED, bump);
+  }, [open]);
 
   if (!open) return null;
   const reloadKey = `${refreshKey}:${tick}`;

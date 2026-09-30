@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { all, get, run as dbRun } from "./db";
-import { defineTool } from "./tools/registry";
+import { defineTool, deferrable, getTool } from "./tools/registry";
+import type { Run } from "./events";
 import type { AgentKey } from "@/lib/roster";
 
 /* Outbound actions (send a mail, create an event, publish a post) are never
@@ -61,6 +63,51 @@ export function defineAction<S extends z.ZodRawShape>(opts: {
     },
   });
 }
+
+/* Deferred tool calls: a guarded direct tool call (cleanOnly on a tainted run,
+ * or a handler throwing NeedsApproval) is stored by callTool in
+ * server/tools/registry.ts as a pending "deferred_tool" action. There is no
+ * propose_ tool for it - only callTool creates it, and only the owner approves
+ * it (POST /api/actions/{id}); no model-callable tool can decide an action.
+ * On approval the original handler runs with the stored, re-validated args in
+ * a fresh CLEAN run; its result is the evidence. */
+const DEFERRED = z.object({
+  tool: z.string().min(1),
+  args: z.record(z.string(), z.unknown()),
+  agent: z.string().min(1),
+  reason: z.string(),
+  label: z.string().optional(),
+});
+const DEFERRED_TIMEOUT_MS = 2 * 60_000;
+EXECUTORS.set("deferred_tool", {
+  label: "Potvrzení akce agenta",
+  schema: DEFERRED as unknown as z.ZodObject<z.ZodRawShape>,
+  execute: async (payload: z.infer<typeof DEFERRED>) => {
+    const def = getTool(payload.tool);
+    if (!def) throw new Error(`Nástroj ${payload.tool} neexistuje.`);
+    if (!deferrable(def.name)) throw new Error(`Nástroj ${def.name} nejde spustit přes potvrzení.`);
+    const parsed = z.object(def.input).safeParse(payload.args);
+    if (!parsed.success) {
+      throw new Error(`Neplatné argumenty: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error("Vypršel časový limit 2 minuty.")), DEFERRED_TIMEOUT_MS);
+    const run: Run = {
+      id: randomUUID(), agent: payload.agent, depth: 0, provider: "approval", source: "approval",
+      tainted: false, emit: () => {}, signal: ac.signal,
+    };
+    try {
+      const result = await Promise.race([
+        Promise.resolve(def.handler(parsed.data, { run })),
+        new Promise<never>((_, reject) => ac.signal.addEventListener("abort", () => reject(ac.signal.reason), { once: true })),
+      ]);
+      const text = typeof result === "string" ? result : JSON.stringify(result ?? null);
+      return text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+});
 
 export function actionKinds() {
   return [...EXECUTORS.entries()].map(([kind, e]) => ({ kind, label: e.label, ready: e.ready?.() ?? null }));

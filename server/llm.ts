@@ -75,9 +75,20 @@ export type LlmRequest = {
   signal: AbortSignal;
   /* Wall-clock budget for this call (defaults to APEX_LLM_TIMEOUT_MS). */
   timeoutMs?: number;
+  /* Native CLI session (claude/codex only): the CLI keeps the conversation,
+   * so a resumed turn sends only the new message. Runs in the fixed cwd. */
+  session?: { id: string; resume: boolean; cwd: string };
 };
 
-export type LlmResult = { text: string; costUsd?: number };
+/* sessionId: the CLI session this call ran in (codex assigns its own). */
+export type LlmResult = { text: string; costUsd?: number; sessionId?: string };
+
+/* The stored CLI session can't be resumed (deleted, expired, corrupt) - the
+ * caller should start over with a fresh session and the transcript. */
+const SESSION_LOST = /No conversation found|no rollout found|thread\/resume|already in use|session.*(not found|invalid|corrupt)/i;
+export function isSessionLost(e: unknown): boolean {
+  return e instanceof Error && SESSION_LOST.test(e.message);
+}
 
 /* Model per role (Settings): the chief and the specialists can run different
  * models on the subscription CLIs; the legacy single key is the fallback for
@@ -134,12 +145,13 @@ function bridgeEnv(run: Run): Record<string, string> {
 
 class CliError extends Error {}
 
-/* Spawn a CLI in an empty temp dir, feed the prompt on stdin and hand each
- * stdout JSON line to onEvent. Rejects with the most useful error it saw. */
-function runCli(bin: string, args: string[], stdin: string, onEvent: (ev: any) => void, signal: AbortSignal, env: Record<string, string> = {}, timeoutMs = llmTimeoutMs()): Promise<void> {
+/* Spawn a CLI in an empty temp dir (or the session's fixed cwd, which is
+ * kept), feed the prompt on stdin and hand each stdout JSON line to onEvent.
+ * Rejects with the most useful error it saw. */
+function runCli(bin: string, args: string[], stdin: string, onEvent: (ev: any) => void, signal: AbortSignal, env: Record<string, string> = {}, timeoutMs = llmTimeoutMs(), fixedCwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error("Zrušeno."));
-    const cwd = mkdtempSync(join(tmpdir(), "apex-"));
+    const cwd = fixedCwd ?? mkdtempSync(join(tmpdir(), "apex-"));
     const child = spawn(bin, args, { cwd, env: childEnv(env), stdio: ["pipe", "pipe", "pipe"] });
     let buf = "";
     let err = "";
@@ -174,7 +186,7 @@ function runCli(bin: string, args: string[], stdin: string, onEvent: (ev: any) =
       clearTimeout(timer);
       clearTimeout(hardKill);
       signal.removeEventListener("abort", kill);
-      rmSync(cwd, { recursive: true, force: true });
+      if (!fixedCwd) rmSync(cwd, { recursive: true, force: true });
       if (signal.aborted) return reject(new Error("Zrušeno."));
       if (code === 0 && !lastError) return resolve();
       reject(new Error(lastError || summarizeStderr(err) || `${bin} skončil s kódem ${code}`));
@@ -192,7 +204,9 @@ async function runClaude(req: LlmRequest): Promise<LlmResult> {
   const native = (req.native ?? []).filter((t) => t === "WebSearch" || t === "WebFetch");
   const args = [
     "-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
-    "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config",
+    // claude keys sessions by cwd: session runs always use the conversation's own dir
+    ...(req.session ? [req.session.resume ? "--resume" : "--session-id", req.session.id] : ["--no-session-persistence"]),
+    "--setting-sources", "", "--strict-mcp-config",
     "--system-prompt", req.system,
     "--tools", native.join(","),
   ];
@@ -222,10 +236,10 @@ async function runClaude(req: LlmRequest): Promise<LlmResult> {
     } else if (ev.type === "result") {
       costUsd = typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : undefined;
       if (typeof ev.result === "string") final = ev.result;
-      if (ev.is_error) throw new CliError(String(ev.result || "Claude vrátil chybu."));
+      if (ev.is_error) throw new CliError(String(ev.result || (Array.isArray(ev.errors) && ev.errors.join("; ")) || "Claude vrátil chybu."));
     }
-  }, req.signal, env, req.timeoutMs);
-  return { text: (final || text).trim(), costUsd };
+  }, req.signal, env, req.timeoutMs, req.session?.cwd);
+  return { text: (final || text).trim(), costUsd, sessionId: req.session?.id };
 }
 
 const CODEX_DISABLED = [
@@ -238,7 +252,12 @@ function tomlString(s: string): string {
 }
 
 async function runCodex(req: LlmRequest): Promise<LlmResult> {
-  const args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", "-c", 'approval_policy="never"'];
+  const s = req.session;
+  // `exec resume` has no --sandbox flag (0.159): the same setting goes in via -c.
+  // A first session turn simply persists (no --ephemeral); codex names the thread.
+  const args = s?.resume
+    ? ["exec", "resume", s.id, "--json", "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"']
+    : ["exec", "--json", "--skip-git-repo-check", ...(s ? [] : ["--ephemeral"]), "--sandbox", "read-only", "-c", 'approval_policy="never"'];
   // Even a read-only sandbox lets the shell read the whole disk; Apex agents get Apex tools only.
   for (const f of CODEX_DISABLED) args.push("--disable", f);
   if (req.run) {
@@ -260,16 +279,19 @@ async function runCodex(req: LlmRequest): Promise<LlmResult> {
   args.push("-");
 
   const parts: string[] = [];
+  let threadId: string | undefined;
   await runCli("codex", args, `<system>\n${req.system}\n</system>\n\n${req.prompt}`, (ev) => {
-    if (ev.type === "item.completed" && ev.item?.type === "agent_message" && ev.item.text) {
+    if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
+      threadId = ev.thread_id;
+    } else if (ev.type === "item.completed" && ev.item?.type === "agent_message" && ev.item.text) {
       const t = (parts.length ? "\n" : "") + ev.item.text;
       parts.push(ev.item.text);
       req.onToken?.(t);
     } else if (ev.type === "error" || ev.type === "turn.failed") {
       throw new CliError(String(ev.message || ev.error?.message || "Codex vrátil chybu."));
     }
-  }, req.signal, {}, req.timeoutMs);
-  return { text: parts.join("\n").trim() };
+  }, req.signal, {}, req.timeoutMs, s?.cwd);
+  return { text: parts.join("\n").trim(), sessionId: s ? threadId ?? (s.resume ? s.id : undefined) : undefined };
 }
 
 async function runGemini(req: LlmRequest): Promise<LlmResult> {

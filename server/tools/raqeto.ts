@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool, untrusted } from "./registry";
+import { defineTool, NeedsApproval, untrusted } from "./registry";
 import { defineAction } from "../actions";
 import { getRun, type Run } from "../events";
 import * as R from "../integrations/raqeto";
@@ -15,12 +15,15 @@ import * as R from "../integrations/raqeto";
  * never send. Not cleanOnly on purpose – "read a client mail, create a task"
  * is the core use case – but guarded once the run is tainted (read external
  * content, or a loop / AI queue run): at most 10 direct writes, no portal-
- * visible task text on client projects (→ propose_raqeto_task_create/update),
- * no done/archive moves, no big reorders, and a queue run never edits its own
- * task. Time entries, timers and mark-replied touch billing or the owner's
- * live state → cleanOnly (time via propose_raqeto_time_log when tainted).
- * Anything client-visible, money or destructive is an approval action
- * (propose_raqeto_*). */
+ * visible task text on client projects, no done/archive moves, no big
+ * reorders, and a queue run never edits its own task; text / project of a
+ * coding-agent task never changes directly. Time entries, timers and
+ * mark-replied touch billing or the owner's live state → cleanOnly.
+ * A guard never dead-ends: it throws NeedsApproval (cleanOnly works the same
+ * way in the registry) and the call becomes a deferred action – an approve
+ * button for the owner; on approval it runs in a clean run (source
+ * "approval"). Anything client-visible, money or destructive stays a
+ * dedicated approval action (propose_raqeto_*). */
 
 type Obj = Record<string, any>;
 const wrap = (text: string) => (text ? untrusted("raqeto", text) : "");
@@ -72,7 +75,7 @@ const ownTask = (run: Run) => runChain(run).map((r) => /^raqeto:(.+)$/.exec(r.so
 function spendWrite(run: Run) {
   const chain = runChain(run);
   if (isTainted(run) && Math.max(...chain.map((r) => r.writes ?? 0)) >= WRITE_BUDGET) {
-    throw new Error(`Limit ${WRITE_BUDGET} přímých zápisů do Raqeto v tomto kroku je vyčerpán (byl přečten externí obsah). Další změny navrhni přes propose_* nebo je shrň majiteli ve výstupu.`);
+    throw new NeedsApproval(`v tomto kroku byl přečten externí obsah a limit ${WRITE_BUDGET} přímých zápisů do Raqeto je vyčerpán.`);
   }
   for (const r of chain) r.writes = (r.writes ?? 0) + 1;
 }
@@ -82,11 +85,11 @@ function logWrite(run: Run, tool: string, id: unknown) {
 }
 function notOwnTask(run: Run, id: string) {
   if (ownTask(run) === id) {
-    throw new Error("Tento úkol právě zpracováváš z fronty AI – přímo ho neměň (stav, priorita, popis, komentáře). Výsledek a návrhy napiš do výstupu, majitel je zkontroluje.");
+    throw new NeedsApproval("úkol právě zpracovává AI fronta – vlastní úkol (stav, priorita, popis, komentáře) agent sám neměnit nesmí.");
   }
 }
-const PORTAL = "Úkol patří do projektu klienta – název, popis, termín, odhad i projekt vidí klient v portálu. V tomto kroku byl přečten externí obsah (pošta, web, CRM), proto se to přímo nezapíše:";
-const CODING = "Úkol zpracovává kódovací agent (AI fronta nebo repozitář projektu) – název, popis ani projekt se přímo nemění. Navrhni změnu přes propose_raqeto_task_update (majitel schválí).";
+const PORTAL = "úkol patří do projektu klienta (název, popis, termín, odhad i projekt vidí klient v portálu) a v tomto kroku byl přečten externí obsah (pošta, web, CRM).";
+const CODING = "úkol zpracovává kódovací agent (AI fronta nebo repozitář projektu) – název, popis a projekt mění jen majitel.";
 
 /* ═════════════ READ tools ═════════════ */
 
@@ -444,7 +447,7 @@ defineTool({
   node: "crm",
   handler: async (a, { run }) => {
     need();
-    if (isTainted(run) && await R.projectHasClient(a.project)) throw new Error(`${PORTAL} použij propose_raqeto_task_create.`);
+    if (isTainted(run) && await R.projectHasClient(a.project)) throw new NeedsApproval(PORTAL);
     spendWrite(run);
     const r = await R.createTask(a);
     if (r.created) logWrite(run, "raqeto_task_create", r.id);
@@ -473,8 +476,9 @@ defineTool({
     const tainted = isTainted(run);
     if (textOrProject || (tainted && portal)) {
       const x = await R.taskExposure(id);
-      if (textOrProject && x.codingAgent) throw new Error(CODING);
-      if (tainted && portal && (x.clientVisible || await R.projectHasClient(fields.project))) throw new Error(`${PORTAL} použij propose_raqeto_task_update.`);
+      // the owner's approval (clean "approval" run) is exactly what CODING asks for
+      if (textOrProject && x.codingAgent && run.source !== "approval") throw new NeedsApproval(CODING);
+      if (tainted && portal && (x.clientVisible || await R.projectHasClient(fields.project))) throw new NeedsApproval(PORTAL);
     }
     spendWrite(run);
     const r = await R.updateTask(id, fields);
@@ -494,7 +498,7 @@ defineTool({
     if (isTainted(run)) {
       const slug = await R.resolveStatus(new_status);
       if (slug === "__archived__" || (await R.taskStatuses()).find((s) => s.slug === slug)?.is_done) {
-        throw new Error("Dokončit ani archivovat úkol nejde v kroku, kde byl přečten externí obsah – napiš majiteli, že je úkol podle tebe hotový.");
+        throw new NeedsApproval(`${slug === "__archived__" ? "archivace" : "dokončení"} úkolu v kroku, kde byl přečten externí obsah, potvrzuje majitel.`);
       }
     }
     spendWrite(run);
@@ -541,7 +545,7 @@ defineTool({
   handler: async ({ items }, { run }) => {
     need();
     if (isTainted(run) && items.length > REORDER_MAX) {
-      throw new Error(`V kroku s externím obsahem jde přeskládat nejvýš ${REORDER_MAX} položek rozvrhu najednou – navrhni pořadí majiteli.`);
+      throw new NeedsApproval(`v kroku s externím obsahem jde přímo přeskládat nejvýš ${REORDER_MAX} položek rozvrhu najednou (tady ${items.length}).`);
     }
     spendWrite(run);
     const r = await R.scheduleReorder(items);

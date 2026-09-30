@@ -1,6 +1,8 @@
+import { readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { all, get, run as dbRun } from "./db";
 import { detectProviders } from "./llm";
-import { runSpecialist } from "./orchestrator";
+import { runSpecialist, SESSIONS_DIR } from "./orchestrator";
 import type { AgentKey } from "@/lib/roster";
 
 /* Loops: scheduled agent jobs that survive restarts. Each firing claims a
@@ -49,7 +51,7 @@ Když žádný lead follow-up nepotřebuje, napiš to jednou větou.`,
   },
 ];
 
-type State = { seeded?: boolean; started?: boolean; busy?: boolean; timer?: ReturnType<typeof setInterval> };
+type State = { seeded?: boolean; started?: boolean; busy?: boolean; timer?: ReturnType<typeof setInterval>; sweptAt?: number };
 const g = globalThis as { __apexLoops?: State };
 const state: State = (g.__apexLoops ??= {});
 
@@ -196,11 +198,31 @@ async function execute(loop: LoopRow, runId: number): Promise<void> {
   }
 }
 
+/* Chat sessions idle for 14 days are forgotten: their cwd under
+ * data/sessions and the conversations row. Runs at most hourly. */
+const SESSION_TTL_MS = 14 * 24 * 3600_000;
+function sweepSessions(now = Date.now()) {
+  if (state.sweptAt && now - state.sweptAt < 3600_000) return;
+  state.sweptAt = now;
+  const cutoff = new Date(now - SESSION_TTL_MS).toISOString().replace("T", " ").slice(0, 19);
+  const rows = new Map(all<{ id: string; updated_at: string }>("SELECT id, updated_at FROM conversations").map((r) => [r.id, r.updated_at]));
+  let dirs: string[] = [];
+  try { dirs = readdirSync(SESSIONS_DIR); } catch { /* no sessions yet */ }
+  for (const name of dirs) {
+    const dir = join(SESSIONS_DIR, name);
+    const used = rows.get(name);
+    const stale = used ? used < cutoff : now - statSync(dir).mtimeMs > SESSION_TTL_MS;
+    if (stale) rmSync(dir, { recursive: true, force: true });
+  }
+  dbRun("DELETE FROM conversations WHERE updated_at < ?", cutoff);
+}
+
 async function tick() {
   if (state.busy) return;
   state.busy = true;
   try {
     ensureSeeded();
+    try { sweepSessions(); } catch (e) { console.error("[apex loops] session cleanup failed:", e); }
     for (const loop of all<LoopRow>("SELECT * FROM loops WHERE enabled = 1 ORDER BY id")) {
       const c = claimIfDue(loop);
       if (c) await execute(loop, c.runId);

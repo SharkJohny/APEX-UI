@@ -21,7 +21,7 @@ import ReasoningWebJs from "./ReasoningWeb";
 import ShaderBackgroundJs from "./ShaderBackground";
 import OrbStatusBar from "./OrbStatusBar";
 import ApexChatDock from "./ApexChatDock";
-import ApexDeck, { type DeckSection } from "./ApexDeck";
+import ApexDeck, { ACTIONS_CHANGED, CopyButton, type DeckSection } from "./ApexDeck";
 import ApexSettings from "./ApexSettings";
 import { useApexVoice } from "./useApexVoice";
 import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
@@ -130,7 +130,7 @@ export function AgentCockpit({ sel, live, refreshKey, onAsk, onClose }: {
       background: "rgba(4,3,12,0.92)", backdropFilter: "blur(24px)",
       border: `1px solid ${c}44`, borderRadius: 16,
       boxShadow: `0 0 40px ${c}18, 0 8px 32px rgba(0,0,0,0.6)`,
-      overflow: "hidden", color: "#f0ede8",
+      overflow: "hidden", color: "#f0ede8", userSelect: "text",
     }}>
       {/* header - drag handle */}
       <div onMouseDown={onMouseDown} style={{
@@ -207,8 +207,15 @@ export function AgentCockpit({ sel, live, refreshKey, onAsk, onClose }: {
                       <span style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-mono)", flex: "none" }}>{fmtTime(j.created_at)}</span>
                     </button>
                     {expanded && (
-                      <div style={{ padding: "0 9px 9px", fontSize: 11.5, lineHeight: 1.5, color: "rgba(255,255,255,0.7)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 220, overflowY: "auto" }}>
-                        {j.output || (j.status === "running" ? "Pracuje se na tom…" : "Bez výstupu.")}
+                      <div style={{ padding: "0 9px 9px" }}>
+                        {j.output && (
+                          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+                            <CopyButton text={j.output} label="Kopírovat výstup" />
+                          </div>
+                        )}
+                        <div style={{ fontSize: 11.5, lineHeight: 1.5, color: "rgba(255,255,255,0.7)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 220, overflowY: "auto" }}>
+                          {j.output || (j.status === "running" ? "Pracuje se na tom…" : "Bez výstupu.")}
+                        </div>
                       </div>
                     )}
                   </li>
@@ -260,6 +267,13 @@ export default function ApexWorld() {
   const closeDeck = useCallback(() => setDeck(null), []);
   const openSettings = useCallback((group = "") => { setSelected(null); setDeck(null); setSettings(group); }, []);
   const closeSettings = useCallback(() => setSettings(null), []);
+
+  // An approval decided in the chat or the Deck → refresh the pending badge.
+  useEffect(() => {
+    const onActions = () => { void refreshStatus(); };
+    window.addEventListener(ACTIONS_CHANGED, onActions);
+    return () => window.removeEventListener(ACTIONS_CHANGED, onActions);
+  }, [refreshStatus]);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");

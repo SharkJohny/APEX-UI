@@ -7,7 +7,7 @@ import { join } from "node:path";
  * One connection per process - kept on globalThis because Next bundles each
  * route separately and would otherwise open several. */
 
-const DATA_DIR = process.env.APEX_DATA_DIR || join(process.cwd(), "data");
+export const DATA_DIR = process.env.APEX_DATA_DIR || join(process.cwd(), "data");
 
 const MIGRATIONS: string[] = [
   `
@@ -203,6 +203,17 @@ const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   ALTER TABLE llm_calls ADD COLUMN model TEXT;
+  `,
+  // Native CLI session per chat conversation (short-term memory between turns).
+  `
+  CREATE TABLE conversations (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
   `,
 ];
 

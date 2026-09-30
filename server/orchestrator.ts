@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { all, get, run as dbRun } from "./db";
+import { chmodSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { all, DATA_DIR, get, run as dbRun } from "./db";
 import { endRun, getRun, startRun, type ApexEvent, type Run } from "./events";
 import { AGENTS, systemPrompt } from "./agents";
-import { llmTimeoutMs, providerSupportsTools, runLlm } from "./llm";
+import { isSessionLost, llmTimeoutMs, providerSupportsTools, runLlm, type LlmResult } from "./llm";
 import { untrusted } from "./tools/registry";
 import { vaultDir, vaultPersona } from "./vault";
 import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
@@ -73,11 +75,41 @@ function contextBlocks(query: string): string[] {
   ].filter(Boolean) as string[];
 }
 
+/* Per-turn refresh for a resumed codex thread: time and memory relevant to the
+ * new message (persona, rules and guide are already in the thread). */
+function turnUpdate(query: string): string {
+  const memory = relevantMemory(query);
+  return [
+    `Aktuální datum a čas: ${new Date().toLocaleString("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}.`,
+    memory.length ? `Z paměti (může souviset s dotazem):\n- ${memory.join("\n- ")}` : "",
+    "Pravidla a persona z začátku konverzace stále platí.",
+  ].filter(Boolean).join("\n\n");
+}
+
 function transcript(messages: ChatMessage[]): string {
   const recent = messages.slice(-HISTORY_TURNS);
   if (recent.length === 1) return recent[0].content;
   const lines = recent.slice(0, -1).map((m) => `${m.role === "user" ? "Uživatel" : "Apex"}: ${m.content}`);
   return `Dosavadní konverzace:\n${lines.join("\n")}\n\nNová zpráva uživatele: ${recent[recent.length - 1].content}`;
+}
+
+/* Short-term memory: chief-of-staff chat turns on claude/codex continue the
+ * CLI's own session for the conversation (resumed turns send only the new
+ * message). Each conversation gets a private cwd - claude keys sessions by
+ * cwd. Specialists, loops and queue runs stay ephemeral. */
+const SESSION_PROVIDERS = new Set(["claude", "codex"]);
+export const SESSIONS_DIR = join(DATA_DIR, "sessions");
+
+type ConversationRow = { id: string; provider: string; session_id: string; cwd: string };
+
+function sessionCwd(conversationId: string): string | undefined {
+  // the id comes from the browser - it becomes a directory name
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(conversationId)) return undefined;
+  const dir = join(SESSIONS_DIR, conversationId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(SESSIONS_DIR, 0o700);
+  chmodSync(dir, 0o700);
+  return dir;
 }
 
 /* ── the user's turn ── */
@@ -100,16 +132,37 @@ export async function runTurn(opts: {
   opts.emit({ t: "state", v: "thinking" });
   try {
     const system = systemPrompt("chief_of_staff", contextBlocks(last.content));
-    const out = await runLlm({
+    const cwd = SESSION_PROVIDERS.has(opts.provider) ? sessionCwd(conversationId) : undefined;
+    const stored = cwd ? get<ConversationRow>("SELECT * FROM conversations WHERE id = ?", conversationId) : undefined;
+    const resumable = stored?.provider === opts.provider && stored.session_id ? stored : undefined;
+    const call = (resume: ConversationRow | undefined) => runLlm({
       provider: opts.provider,
       agent: "chief_of_staff",
-      system,
-      prompt: transcript(opts.messages),
+      // codex has no system-prompt flag, so its prompt carries the system text inline;
+      // a resumed thread already holds persona + rules - send only what changes per turn
+      system: resume && opts.provider === "codex" ? turnUpdate(last.content) : system,
+      prompt: resume ? last.content : transcript(opts.messages),
       run: tools ? run : undefined,
       onToken: (v) => opts.emit({ t: "token", v }),
       signal: ctl.signal,
       timeoutMs: llmTimeoutMs(),
+      // claude takes our id for a new session; codex names its own thread
+      session: cwd ? { id: resume?.session_id ?? randomUUID(), resume: !!resume, cwd } : undefined,
     });
+    let out: LlmResult;
+    try {
+      out = await call(resumable);
+    } catch (e) {
+      // a vanished/corrupt session: start over once with the transcript (never after abort/timeout)
+      if (!resumable || ctl.signal.aborted || !isSessionLost(e)) throw e;
+      out = await call(undefined);
+    }
+    if (cwd && out.sessionId) {
+      dbRun(`INSERT INTO conversations (id, provider, session_id, cwd) VALUES (?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, session_id = excluded.session_id,
+               cwd = excluded.cwd, updated_at = datetime('now')`,
+        conversationId, opts.provider, out.sessionId, cwd);
+    }
     if (out.text) dbRun("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)", conversationId, "assistant", out.text);
     opts.emit({ t: "done", conversationId });
   } finally {

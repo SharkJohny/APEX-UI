@@ -1,16 +1,19 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
-import { Ear, EarOff, LayoutGrid, Loader2, Mic, MicOff, PhoneOff, RotateCcw, Send, Settings, Square, Volume2, VolumeX } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Ear, EarOff, LayoutGrid, Loader2, Mic, MicOff, PhoneOff, RotateCcw, Send, Settings, Square, Volume2, VolumeX } from "lucide-react";
 import type { Activity, VoiceMode, useApexVoice } from "./useApexVoice";
-import type { DeckSection } from "./ApexDeck";
+import { ACTIONS_CHANGED, ActionDetails, CopyButton, notifyActionsChanged, parsePayload, type ActionRow, type DeckSection } from "./ApexDeck";
+import { apiJson, asList } from "./useApexStatus";
 import { ROSTER_BY_KEY } from "@/lib/roster";
 
 /* Bottom-right conversation panel: transcript, the current turn's agent
  * activity (jobs, proposed actions, notes), text input (for browsers without
  * speech recognition, or just typing), provider picker, mic / stop / mute,
  * the Command Deck button with the pending-approvals badge, the Settings gear
- * and the voice mode switch (browser / OpenAI / Realtime). */
+ * and the voice mode switch (browser / OpenAI / Realtime). Text is selectable;
+ * every bubble and the whole conversation can be copied, and proposed actions
+ * can be approved or rejected right in the chat. */
 
 type Voice = ReturnType<typeof useApexVoice>;
 
@@ -85,7 +88,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
         display: "flex", flexDirection: "column", gap: 10, padding: 12,
         borderRadius: 16, border: "1px solid rgba(240,237,232,0.14)",
         background: "rgba(6,13,24,0.72)", backdropFilter: "blur(10px)",
-        color: "#f0ede8", fontSize: 14,
+        color: "#f0ede8", fontSize: 14, userSelect: "text",
       }}
     >
       <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -97,7 +100,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
             boxShadow: state === "idle" ? "none" : `0 0 10px ${state === "listening" ? CYAN : GOLD}`,
           }}
         />
-        <span role="status" style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.8, flex: 1, whiteSpace: "nowrap" }}>
+        <span role="status" style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.8, flex: 1, minWidth: 44, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {realtime.connecting ? "Spojuji…" : state === "thinking" && reasoning ? "Agenti pracují…" : handsFree && state === "listening" && !isRealtime ? "Trvale poslouchám…" : LABEL[state]}
         </span>
         {realtime.on && (
@@ -110,6 +113,16 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
           >
             REALTIME {minutes} min
           </span>
+        )}
+        {messages.length > 0 && (
+          <CopyButton
+            text={() => messages.map((m) => `**${m.role === "user" ? "Ty" : "Apex"}:** ${m.content}`).join("\n\n")}
+            label="Kopírovat konverzaci"
+            title="Kopírovat konverzaci (Markdown)"
+            className="copy-btn copy-btn-icon"
+            iconSize={15}
+            style={iconBtn}
+          />
         )}
         <button
           type="button"
@@ -186,7 +199,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
         <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.4, opacity: 0.7 }}>{voiceHints.join(" ")}</p>
       )}
 
-      <div ref={logRef} aria-live="polite" style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+      <div ref={logRef} aria-live="polite" style={{ overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column", gap: 8, minHeight: 0, paddingTop: 10 }}>
         {messages.length === 0 && !partial && !interim && (
           <p style={{ margin: 0, opacity: 0.6, lineHeight: 1.45 }}>
             {isRealtime
@@ -281,15 +294,17 @@ function Bubble({ role, text, faint }: { role: "user" | "assistant"; text: strin
   const mine = role === "user";
   return (
     <div
+      className="dock-bubble"
       style={{
         alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "88%",
-        padding: "7px 11px", borderRadius: 12, lineHeight: 1.45, whiteSpace: "pre-wrap",
+        padding: "7px 11px", borderRadius: 12, lineHeight: 1.45, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
         background: mine ? "rgba(13,210,255,0.12)" : "rgba(245,166,35,0.10)",
         border: `1px solid ${mine ? "rgba(13,210,255,0.28)" : "rgba(245,166,35,0.25)"}`,
         opacity: faint ? 0.7 : 1,
       }}
     >
       {text}
+      {!faint && text && <CopyButton text={text} label="Kopírovat zprávu" className="copy-btn dock-bubble-copy" />}
     </div>
   );
 }
@@ -308,15 +323,111 @@ function ActivityChips({ items, onOpenDeck }: { items: Activity[]; onOpenDeck: (
             </span>
           );
         }
-        if (a.kind === "action") {
-          return (
-            <button key={a.key} type="button" className="dock-chip dock-chip-action" title={a.summary} onClick={() => onOpenDeck("approvals")}>
-              <span>Návrh ke schválení #{a.id} – otevřít</span>
-            </button>
-          );
-        }
+        if (a.kind === "action") return <ActionChip key={a.key} id={a.id} kind={a.actionKind} summary={a.summary} onOpenDeck={onOpenDeck} />;
         return <span key={a.key} className={`dock-chip dock-chip-${a.kind}`}><span>{a.text}</span></span>;
       })}
+    </div>
+  );
+}
+
+const EDITABLE_KINDS = new Set(["email_send", "social_post", "calendar_create", "vault_write"]);
+
+/* A proposed action inline in the chat: summary, agent, expandable details and
+ * Schválit / Zamítnout (POST /api/actions/{id}), then the result in place. The
+ * row is fetched once when the chip appears and again when another view
+ * reports a change (apex:actions-changed). */
+function ActionChip({ id, kind, summary, onOpenDeck }: { id: number; kind: string; summary: string; onOpenDeck: (s?: DeckSection) => void }) {
+  const [row, setRow] = useState<ActionRow | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await apiJson<unknown>("/api/actions");
+      const found = asList<ActionRow>(d, "actions").find((r) => r.id === id);
+      if (found) { setRow(found); setLoadErr(null); } else setLoadErr("Návrh se nepodařilo najít – otevři Command Deck.");
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [id]);
+
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const onChange = () => { void load(); };
+    window.addEventListener(ACTIONS_CHANGED, onChange);
+    return () => window.removeEventListener(ACTIONS_CHANGED, onChange);
+  }, [load]);
+
+  const payload = useMemo(() => (row ? parsePayload(row.payload) : null), [row]);
+  const status = row?.status ?? "pending";
+  const actionable = !!row && (status === "pending" || status === "failed");
+  const agent = row?.agent ? ROSTER_BY_KEY[row.agent]?.name ?? row.agent : null;
+  const label = kind === "deferred_tool" && payload && typeof payload.label === "string" && payload.label ? payload.label : null;
+
+  const decide = async (decision: "approve" | "reject") => {
+    setBusy(decision);
+    setErr(null);
+    try {
+      const next = await apiJson<ActionRow>(`/api/actions/${id}`, { method: "POST", body: JSON.stringify({ decision }) });
+      if (next && typeof next === "object" && "status" in next) setRow(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+      notifyActionsChanged();
+    }
+  };
+
+  return (
+    <div className="dock-action" role="group" aria-label={`Návrh ke schválení #${id}`}>
+      <div className="dock-action-head">
+        <span className="dock-action-tag">Ke schválení #{id}{agent ? ` · ${agent}` : ""}</span>
+        {status !== "pending" && <span className={`deck-pill deck-pill-${status}`}>{status === "executed" ? "provedeno" : status === "rejected" ? "zamítnuto" : status === "failed" ? "chyba" : status === "approved" ? "provádí se" : status}</span>}
+      </div>
+      <p className="dock-action-sum">{summary}</p>
+      {label && label !== summary && <p className="dock-action-meta">{label}</p>}
+      {loadErr && !row && <p className="dock-action-meta">{loadErr}</p>}
+
+      {payload && (
+        <button type="button" className="dock-action-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+          {open ? "Skrýt podrobnosti" : "Podrobnosti"}
+        </button>
+      )}
+      {open && payload && <div className="dock-action-details"><ActionDetails kind={kind} payload={payload} /></div>}
+
+      {status === "executed" && (
+        <div className="dock-action-result dock-action-ok">
+          <span>✓ Provedeno</span>
+          {row?.evidence && (
+            <>
+              <span className="dock-action-evidence">{row.evidence}</span>
+              <CopyButton text={row.evidence} label="Kopírovat důkaz" />
+            </>
+          )}
+        </div>
+      )}
+      {status === "failed" && <p className="dock-action-result dock-action-err">✗ Chyba{row?.error ? `: ${row.error}` : ""}</p>}
+      {status === "rejected" && <p className="dock-action-result dock-action-meta">Zamítnuto</p>}
+      {err && <p className="dock-action-result dock-action-err" role="alert">{err}</p>}
+
+      <div className="dock-action-btns">
+        {actionable && (
+          <>
+            <button type="button" className="deck-btn deck-btn-sm deck-btn-gold" disabled={!!busy} onClick={() => void decide("approve")}>
+              {busy === "approve" ? <><Loader2 size={12} className="dock-spin" aria-hidden="true" /> Provádím…</> : status === "failed" ? "Zkusit znovu" : "Schválit"}
+            </button>
+            <button type="button" className="deck-btn deck-btn-sm" disabled={!!busy} onClick={() => void decide("reject")}>
+              {busy === "reject" ? "…" : "Zamítnout"}
+            </button>
+          </>
+        )}
+        {(EDITABLE_KINDS.has(kind) || (!row && !!loadErr)) && (status === "pending" || !row) && (
+          <button type="button" className="deck-btn deck-btn-sm" onClick={() => onOpenDeck("approvals")}>Otevřít v Decku</button>
+        )}
+      </div>
     </div>
   );
 }

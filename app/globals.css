@@ -240,3 +240,54 @@ body {
 .sett-switch:focus-visible, .sett-eye:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .sett-switch, .sett-knob { transition: none; } }
 .sett-group .deck-btn { flex: 0 1 auto; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+
+/* ── Copy buttons + selectable chat (ApexChatDock, ApexDeck, cockpit) ── */
+.copy-btn {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 3px 7px; min-height: 22px; border-radius: 7px; cursor: pointer;
+  border: 1px solid rgba(240, 237, 232, 0.18); background: rgba(6, 13, 24, 0.85);
+  color: rgba(240, 237, 232, 0.8); font: inherit; font-size: 11px; line-height: 1;
+  user-select: none;
+}
+.copy-btn:hover { border-color: rgba(240, 237, 232, 0.36); color: #f0ede8; }
+.copy-btn:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
+.copy-btn[data-copied] { border-color: rgba(52, 211, 153, 0.55); color: #6ee7b7; }
+.copy-btn-icon { position: relative; }
+.copy-btn-icon > .copy-fb {
+  position: absolute; top: calc(100% + 5px); right: 0; z-index: 2; white-space: nowrap;
+  padding: 3px 7px; border-radius: 6px; font-size: 11px; line-height: 1.2;
+  background: rgba(6, 13, 24, 0.95); border: 1px solid rgba(52, 211, 153, 0.45); color: #6ee7b7;
+}
+.dock-bubble { position: relative; user-select: text; -webkit-user-select: text; cursor: text; }
+.dock-bubble-copy { position: absolute; top: -10px; right: 6px; opacity: 0; transition: opacity 0.15s; }
+.dock-bubble:hover .dock-bubble-copy, .dock-bubble:focus-within .dock-bubble-copy, .dock-bubble-copy[data-copied] { opacity: 1; }
+@media (hover: none) { .dock-bubble-copy { opacity: 0.85; } }
+@media (prefers-reduced-motion: reduce) { .dock-bubble-copy { transition: none; } }
+
+/* ── Inline approval card in the chat dock ── */
+.dock-action {
+  flex-basis: 100%; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; border-radius: 12px; font-size: 12.5px;
+  border: 1px solid rgba(13, 210, 255, 0.4); background: rgba(13, 210, 255, 0.06);
+}
+.dock-action-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dock-action-tag {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #7df1ff;
+}
+.dock-action-sum { margin: 0; line-height: 1.4; color: #f0ede8; overflow-wrap: anywhere; }
+.dock-action-meta { margin: 0; font-size: 11.5px; color: rgba(240, 237, 232, 0.6); overflow-wrap: anywhere; }
+.dock-action-toggle {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 0;
+  background: none; border: none; color: rgba(240, 237, 232, 0.7); cursor: pointer; font: inherit; font-size: 11.5px;
+}
+.dock-action-toggle:hover { color: #f0ede8; }
+.dock-action-toggle:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
+.dock-action-details { max-height: 240px; overflow: auto; padding: 6px 8px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); }
+.dock-action-details .deck-pre { max-height: none; }
+.dock-action-result { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.dock-action-ok { color: #6ee7b7; }
+.dock-action-err { color: #ff9b9b; }
+.dock-action-evidence { font-family: var(--font-mono); font-size: 11px; color: rgba(240, 237, 232, 0.75); min-width: 0; overflow-wrap: anywhere; }
+.dock-action-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.dock-action-btns:empty { display: none; }
