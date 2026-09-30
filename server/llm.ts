@@ -12,7 +12,8 @@ import { run as dbRun } from "./db";
 
 export type ProviderInfo = { id: string; label: string; kind: "subscription" | "api"; tools: boolean };
 
-const TIMEOUT_MS = Number(process.env.APEX_LLM_TIMEOUT_MS || 600_000);
+/* Read per call: the owner can change it in Settings without a restart. */
+export const llmTimeoutMs = () => Number(process.env.APEX_LLM_TIMEOUT_MS || 600_000);
 const MCP_SCRIPT = join(process.cwd(), "lib", "mcp", "apex-mcp.mjs");
 
 const gBase = globalThis as { __apexOrigin?: string };
@@ -78,17 +79,37 @@ export type LlmRequest = {
 
 export type LlmResult = { text: string; costUsd?: number };
 
+/* Model per role (Settings): the chief and the specialists can run different
+ * models on the subscription CLIs; the legacy single key is the fallback for
+ * both. Empty = the CLI's own default. Read at call time so changes apply live. */
+function cliModel(cli: "CLAUDE" | "CODEX", agent: string): string | undefined {
+  const role = agent === "chief_of_staff" ? "CHIEF" : "SPECIALIST";
+  return process.env[`APEX_${cli}_MODEL_${role}`]?.trim() || process.env[`APEX_${cli}_MODEL`]?.trim() || undefined;
+}
+
+function modelFor(req: LlmRequest): string | undefined {
+  switch (req.provider) {
+    case "claude": return cliModel("CLAUDE", req.agent);
+    case "codex": return cliModel("CODEX", req.agent);
+    case "gemini": return process.env.APEX_GEMINI_MODEL || undefined;
+    case "openai-api": return process.env.OPENAI_MODEL || "gpt-4o-mini";
+    case "anthropic-api": return process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+  }
+  return undefined;
+}
+
 export async function runLlm(req: LlmRequest): Promise<LlmResult> {
   const started = Date.now();
+  const model = modelFor(req) || "(výchozí)";
   try {
     const out = await dispatch(req);
-    dbRun("INSERT INTO llm_calls (run_id, provider, agent, ms, ok, cost_usd) VALUES (?,?,?,?,1,?)",
-      req.run?.id ?? null, req.provider, req.agent, Date.now() - started, out.costUsd ?? null);
+    dbRun("INSERT INTO llm_calls (run_id, provider, agent, ms, ok, cost_usd, model) VALUES (?,?,?,?,1,?,?)",
+      req.run?.id ?? null, req.provider, req.agent, Date.now() - started, out.costUsd ?? null, model);
     return out;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    dbRun("INSERT INTO llm_calls (run_id, provider, agent, ms, ok, error) VALUES (?,?,?,?,0,?)",
-      req.run?.id ?? null, req.provider, req.agent, Date.now() - started, msg.slice(0, 500));
+    dbRun("INSERT INTO llm_calls (run_id, provider, agent, ms, ok, error, model) VALUES (?,?,?,?,0,?,?)",
+      req.run?.id ?? null, req.provider, req.agent, Date.now() - started, msg.slice(0, 500), model);
     throw e;
   }
 }
@@ -115,7 +136,7 @@ class CliError extends Error {}
 
 /* Spawn a CLI in an empty temp dir, feed the prompt on stdin and hand each
  * stdout JSON line to onEvent. Rejects with the most useful error it saw. */
-function runCli(bin: string, args: string[], stdin: string, onEvent: (ev: any) => void, signal: AbortSignal, env: Record<string, string> = {}, timeoutMs = TIMEOUT_MS): Promise<void> {
+function runCli(bin: string, args: string[], stdin: string, onEvent: (ev: any) => void, signal: AbortSignal, env: Record<string, string> = {}, timeoutMs = llmTimeoutMs()): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error("Zrušeno."));
     const cwd = mkdtempSync(join(tmpdir(), "apex-"));
@@ -181,10 +202,11 @@ async function runClaude(req: LlmRequest): Promise<LlmResult> {
     const config = { mcpServers: { apex: { command: process.execPath, args: [MCP_SCRIPT], env: bridgeEnv(req.run) } } };
     args.push("--mcp-config", JSON.stringify(config));
     allowed.push("mcp__apex");
-    env = { MCP_TOOL_TIMEOUT: String(TIMEOUT_MS), MCP_TIMEOUT: "30000" };
+    env = { MCP_TOOL_TIMEOUT: String(llmTimeoutMs()), MCP_TIMEOUT: "30000" };
   }
   if (allowed.length) args.push("--allowedTools", allowed.join(","));
-  if (process.env.APEX_CLAUDE_MODEL) args.push("--model", process.env.APEX_CLAUDE_MODEL);
+  const model = cliModel("CLAUDE", req.agent);
+  if (model) args.push("--model", model);
 
   let text = "";
   let final = "";
@@ -225,13 +247,16 @@ async function runCodex(req: LlmRequest): Promise<LlmResult> {
       "-c", `mcp_servers.apex.command=${tomlString(process.execPath)}`,
       "-c", `mcp_servers.apex.args=[${tomlString(MCP_SCRIPT)}]`,
       "-c", `mcp_servers.apex.env={${env}}`,
-      "-c", `mcp_servers.apex.tool_timeout_sec=${Math.round(TIMEOUT_MS / 1000)}`,
+      "-c", `mcp_servers.apex.tool_timeout_sec=${Math.round(llmTimeoutMs() / 1000)}`,
       // Apex tools are safe by construction (outbound work only proposes); without this codex exec rejects every call
       "-c", 'mcp_servers.apex.default_tools_approval_mode="approve"',
     );
   }
   if (req.native?.some((t) => t.startsWith("Web"))) args.push("-c", "tools.web_search=true");
-  if (process.env.APEX_CODEX_MODEL) args.push("-m", process.env.APEX_CODEX_MODEL);
+  const model = cliModel("CODEX", req.agent);
+  if (model) args.push("-m", model);
+  const effort = process.env.APEX_CODEX_REASONING?.trim();
+  if (effort && /^[a-z]+$/.test(effort)) args.push("-c", `model_reasoning_effort=${tomlString(effort)}`);
   args.push("-");
 
   const parts: string[] = [];
@@ -284,7 +309,7 @@ async function runOpenAiApi(req: LlmRequest): Promise<LlmResult> {
     signal: req.signal,
     headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      model: modelFor(req),
       stream: true,
       messages: [{ role: "system", content: req.system }, { role: "user", content: req.prompt }],
     }),
@@ -304,7 +329,7 @@ async function runAnthropicApi(req: LlmRequest): Promise<LlmResult> {
     signal: req.signal,
     headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY!, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
+      model: modelFor(req),
       max_tokens: 2048,
       stream: true,
       system: req.system,

@@ -193,3 +193,50 @@ body {
 @keyframes dockSpin { to { transform: rotate(360deg); } }
 .dock-spin { animation: dockSpin 1s linear infinite; flex: none; }
 @media (prefers-reduced-motion: reduce) { .dock-spin { animation: none; } }
+
+/* ── Nastavení drawer (components/ApexSettings.tsx) - reuses the .deck shell ── */
+.sett { z-index: 72; width: min(600px, 100vw); }
+@media (max-width: 640px) { .sett { width: 100vw; } }
+.sett-group { gap: 14px; }
+.sett-gap6 { gap: 6px; }
+.sett-field {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid rgba(240, 237, 232, 0.1); background: rgba(240, 237, 232, 0.03);
+}
+.sett-label { font-size: 13px; color: #f0ede8; min-width: 0; overflow-wrap: anywhere; }
+.sett-key { font-size: 10px; letter-spacing: 0.06em; color: rgba(240, 237, 232, 0.38); margin-top: -4px; }
+.sett-dim { color: rgba(240, 237, 232, 0.45); }
+.sett-inp { min-width: 140px; }
+.sett-explain { border-color: rgba(13, 210, 255, 0.28); background: rgba(13, 210, 255, 0.05); }
+.sett-foot { margin-top: 18px; }
+.sett-src {
+  flex: none; padding: 2px 8px; border-radius: 10px; font-family: var(--font-mono); font-size: 9.5px;
+  letter-spacing: 0.08em; border: 1px solid rgba(240, 237, 232, 0.2); color: rgba(240, 237, 232, 0.65);
+}
+.sett-src-settings { border-color: rgba(245, 166, 35, 0.55); color: #ffd080; }
+.sett-src-env { border-color: rgba(13, 210, 255, 0.45); color: #7df1ff; }
+.sett-src-unset { border-color: rgba(240, 237, 232, 0.14); color: rgba(240, 237, 232, 0.45); }
+.sett-secret { position: relative; display: flex; min-width: 160px; }
+.sett-secret .deck-input { padding-right: 36px; }
+.sett-eye {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px;
+  background: none; border: none; color: rgba(240, 237, 232, 0.7); cursor: pointer;
+}
+.sett-danger { border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.12); color: #ff9b9b; }
+.sett-confirm { flex-basis: 100%; }
+.sett-switch {
+  position: relative; width: 40px; height: 22px; flex: none; padding: 0; border-radius: 11px; cursor: pointer;
+  border: 1px solid rgba(240, 237, 232, 0.25); background: rgba(240, 237, 232, 0.08); transition: background 0.2s, border-color 0.2s;
+}
+.sett-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: rgba(240, 237, 232, 0.75); transition: transform 0.2s;
+}
+.sett-switch[aria-checked="true"] { background: rgba(13, 210, 255, 0.35); border-color: rgba(13, 210, 255, 0.7); }
+.sett-switch[aria-checked="true"] .sett-knob { transform: translateX(18px); background: #7df1ff; }
+.sett-switch:disabled { opacity: 0.5; cursor: default; }
+.sett-switch:focus-visible, .sett-eye:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .sett-switch, .sett-knob { transition: none; } }
+.sett-group .deck-btn { flex: 0 1 auto; max-width: 100%; overflow-wrap: anywhere; text-align: left; }

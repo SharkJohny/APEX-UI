@@ -1,28 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EnergyVad, askApexOutput, collectTurn, ndjsonSplitter, pickRecorderMime, rms, type ApexEvent } from "./voiceCore";
+import { useRealtimeVoice, type RealtimePhase } from "./useRealtimeVoice";
 
-/* The voice loop behind the orb: listen (browser speech recognition) → think
- * (stream NDJSON events from /api/chat: tokens, agent traces, jobs, proposed
- * actions) → speak (sentence by sentence, so Apex starts talking before the
- * whole reply has arrived) → idle. */
+/* The voice loop behind the orb: listen (browser speech recognition, or a
+ * recording cut by an energy VAD and transcribed by OpenAI via /api/stt) →
+ * think (stream NDJSON events from /api/chat: tokens, agent traces, jobs,
+ * proposed actions) → speak (sentence by sentence, so Apex starts talking
+ * before the whole reply has arrived) → idle.
+ * Voice mode "realtime" swaps the whole loop for an OpenAI Realtime call
+ * (useRealtimeVoice); its ask_apex tool runs the same /api/chat turn. */
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking";
 export type WebState = "standby" | "listening" | "processing" | "reasoning" | "speaking";
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type ProviderInfo = { id: string; label: string; kind: "subscription" | "api"; tools?: boolean };
 export type TtsMode = "elevenlabs" | "openai" | "browser";
+export type VoiceMode = "browser" | "openai" | "realtime";
+export type SttMode = "browser" | "openai";
 
-/* Mirrors server/events.ts (ApexEvent) - the browser must not import server code. */
-type ApexEvent =
-  | { t: "state"; v: "thinking" | "reasoning" | "speaking" | "idle" }
-  | { t: "token"; v: string }
-  | { t: "trace"; helper: string; tool: string }
-  | { t: "job"; id: number; agent: string; status: "running" | "done" | "failed"; summary?: string }
-  | { t: "action"; id: number; kind: string; summary: string }
-  | { t: "info"; v: string }
-  | { t: "error"; v: string }
-  | { t: "done"; conversationId: string };
+type ProvidersResponse = {
+  providers?: ProviderInfo[]; defaultProvider?: string; tts?: TtsMode;
+  voiceMode?: VoiceMode; stt?: SttMode; realtime?: boolean; hints?: string[];
+};
 
 /* One line in the dock's per-turn activity strip. Jobs update in place by id. */
 export type Activity =
@@ -59,6 +60,9 @@ function recognitionCtor(): (new () => Recognition) | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
+const MIC_DENIED = "Mikrofon není povolený - povol ho v adresním řádku prohlížeče.";
+const NO_RECOGNITION = "Tenhle prohlížeč neumí rozpoznávat řeč - použij Chrome, nebo piš do pole dole.";
+
 /* Cut finished sentences off the front of the buffer; the rest waits for more text. */
 function takeSentences(buf: string): [string[], string] {
   const out: string[] = [];
@@ -74,6 +78,8 @@ function takeSentences(buf: string): [string[], string] {
   return [out, buf.slice(last)];
 }
 
+type Recording = { finish: (upload: boolean) => void };
+
 export function useApexVoice() {
   const [state, setState] = useState<VoiceState>("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -83,8 +89,13 @@ export function useApexVoice() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProviderState] = useState<string>("");
   const [tts, setTts] = useState<TtsMode>("browser");
+  const [voiceMode, setVoiceModeState] = useState<VoiceMode>("browser");
+  const [stt, setStt] = useState<SttMode>("browser");
+  const [realtimeAvailable, setRealtimeAvailable] = useState(false);
+  const [voiceHints, setVoiceHints] = useState<string[]>([]);
   const [muted, setMutedState] = useState(false);
-  const [canListen, setCanListen] = useState(false);
+  // What this browser can do: speech recognition, recording, WebRTC.
+  const [caps, setCaps] = useState({ recognition: false, recorder: false, rtc: false });
   // Hands-free: the mic reopens by itself whenever Apex is idle - after each
   // answer and after silence - so a conversation needs no taps. The mic stays
   // closed while Apex speaks, or it would hear (and answer) itself.
@@ -95,10 +106,12 @@ export function useApexVoice() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [dataVersion, setDataVersion] = useState(0); // bumps on job / action events so panels refetch
   const [newActions, setNewActions] = useState(0);   // actions proposed in this session (badge fallback without /api/status)
+  const [rtPhase, setRtPhase] = useState<RealtimePhase>("off");
 
   const run = useRef(0);                 // bumps on every new turn / stop; stale callbacks compare against it
   const abort = useRef<AbortController | null>(null);
   const recog = useRef<Recognition | null>(null);
+  const rec = useRef<Recording | null>(null); // OpenAI STT recording in progress
   const queue = useRef<string[]>([]);
   const playing = useRef<number | null>(null); // run id whose queue is being spoken
   const streamDone = useRef(true);
@@ -109,6 +122,7 @@ export function useApexVoice() {
   const messagesRef = useRef<ChatMessage[]>([]);
   const mutedRef = useRef(false);
   const handsFreeRef = useRef(false);
+  const providerRef = useRef("");
   const listenFails = useRef(0);          // consecutive recognition errors → back off before reopening the mic
   const relisten = useRef<ReturnType<typeof setTimeout> | null>(null);
   const convRef = useRef<string | null>(null);
@@ -117,42 +131,56 @@ export function useApexVoice() {
   messagesRef.current = messages;
   mutedRef.current = muted;
   handsFreeRef.current = handsFree;
+  providerRef.current = provider;
 
-  useEffect(() => {
-    setCanListen(!!recognitionCtor());
-    setMutedState(load(MUTE_KEY) === "1");
-    setHandsFreeState(!!recognitionCtor() && load(HANDS_FREE_KEY) === "1");
-    fetch("/api/providers")
+  const pushMessage = useCallback((m: ChatMessage) => {
+    messagesRef.current = [...messagesRef.current, m];
+    setMessages(messagesRef.current);
+  }, []);
+
+  /* Providers + voice setup; refetched after a settings change. */
+  const loadConfig = useCallback(() => {
+    return fetch("/api/providers")
       .then((r) => r.json())
-      .then((d: { providers?: ProviderInfo[]; tts?: TtsMode }) => {
+      .then((d: ProvidersResponse) => {
         const list = d.providers || [];
         setProviders(list);
         setTts(d.tts === "elevenlabs" || d.tts === "openai" ? d.tts : "browser");
+        setVoiceModeState(d.voiceMode === "openai" || d.voiceMode === "realtime" ? d.voiceMode : "browser");
+        setStt(d.stt === "openai" ? "openai" : "browser");
+        setRealtimeAvailable(!!d.realtime);
+        setVoiceHints(d.hints || []);
+        const current = providerRef.current;
+        if (current && list.some((p) => p.id === current)) return;
         const saved = load(PROVIDER_KEY);
-        const pick = list.find((p) => p.id === saved) ?? list[0];
+        const pick = list.find((p) => p.id === saved) ?? list.find((p) => p.id === d.defaultProvider) ?? list[0];
         if (pick) setProviderState(pick.id);
         else setError("Nenašel jsem žádného AI poskytovatele. Nainstaluj a přihlas claude, codex nebo gemini CLI.");
       })
       .catch(() => setError("Nepodařilo se načíst seznam poskytovatelů."));
-    // Chrome loads voices lazily; touching the list early warms it up.
-    try { window.speechSynthesis?.getVoices(); } catch { /* no TTS */ }
   }, []);
 
+  useEffect(() => {
+    const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    setCaps({
+      recognition: !!recognitionCtor(),
+      recorder: !!md?.getUserMedia && typeof MediaRecorder !== "undefined",
+      rtc: !!md?.getUserMedia && typeof RTCPeerConnection !== "undefined",
+    });
+    setMutedState(load(MUTE_KEY) === "1");
+    setHandsFreeState(load(HANDS_FREE_KEY) === "1");
+    void loadConfig();
+    // The Settings drawer announces changes; voice mode / keys may have moved.
+    const onSettings = () => { void loadConfig(); };
+    window.addEventListener("apex:settings-changed", onSettings);
+    // Chrome loads voices lazily; touching the list early warms it up.
+    try { window.speechSynthesis?.getVoices(); } catch { /* no TTS */ }
+    return () => window.removeEventListener("apex:settings-changed", onSettings);
+  }, [loadConfig]);
+
+  const canListen = voiceMode === "realtime" ? caps.rtc : stt === "openai" ? caps.recorder : caps.recognition;
+
   const setProvider = useCallback((id: string) => { setProviderState(id); save(PROVIDER_KEY, id); }, []);
-  const setMuted = useCallback((m: boolean) => {
-    setMutedState(m);
-    save(MUTE_KEY, m ? "1" : "0");
-    mutedRef.current = m;
-    if (m) {
-      // Voice off means no more speech at all: drop the queue and cancel any
-      // server TTS request still in flight, not just the audio element.
-      queue.current = [];
-      ttsAbort.current?.abort();
-      ttsAbort.current = null;
-      try { window.speechSynthesis?.cancel(); } catch { /* no TTS */ }
-      if (audio.current) { audio.current.pause(); audio.current.dispatchEvent(new Event("ended")); audio.current = null; }
-    }
-  }, []);
 
   /* ── speaking ── */
   const finishIfDone = useCallback((id: number) => {
@@ -191,7 +219,7 @@ export function useApexVoice() {
       const ctrl = new AbortController();
       ttsAbort.current = ctrl;
       return fetch("/api/tts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal: ctrl.signal })
-        .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then(async (r) => (r.ok ? r.blob() : Promise.reject(new Error((await r.json().catch(() => null))?.error || `HTTP ${r.status}`))))
         .then((blob) => new Promise<void>((resolve) => {
           if (ttsAbort.current === ctrl) ttsAbort.current = null;
           if (id !== run.current || mutedRef.current) return resolve();
@@ -237,7 +265,7 @@ export function useApexVoice() {
     void pump(id);
   }, [pump]);
 
-  /* Cut off anything in flight: request, speech, recognition. */
+  /* Cut off anything in flight: request, speech, recognition, recording. */
   const stopAll = useCallback(() => {
     run.current++;
     abort.current?.abort();
@@ -252,54 +280,46 @@ export function useApexVoice() {
     if (audio.current) { audio.current.pause(); audio.current.dispatchEvent(new Event("ended")); audio.current = null; }
     try { recog.current?.abort(); } catch { /* not running */ }
     recog.current = null;
+    rec.current?.finish(false);
+    rec.current = null;
     setInterim("");
   }, []);
 
+  const setMuted = useCallback((m: boolean) => {
+    setMutedState(m);
+    save(MUTE_KEY, m ? "1" : "0");
+    mutedRef.current = m;
+    if (m) {
+      // Voice off means no more speech at all: drop the queue and cancel any
+      // server TTS request still in flight, not just the audio element.
+      queue.current = [];
+      ttsAbort.current?.abort();
+      ttsAbort.current = null;
+      try { window.speechSynthesis?.cancel(); } catch { /* no TTS */ }
+      if (audio.current) { audio.current.pause(); audio.current.dispatchEvent(new Event("ended")); audio.current = null; }
+    }
+  }, []);
+
   /* ── thinking ── */
-  const send = useCallback(async (text: string) => {
-    const content = text.trim();
-    if (!content) return;
-    if (!provider) { setError("Není vybraný žádný poskytovatel AI."); return; }
-    stopAll();
-    const id = run.current;
-    const history: ChatMessage[] = [...messagesRef.current, { role: "user", content }];
-    setMessages(history);
-    setPartial("");
-    setError(null);
-    setState("thinking");
-    streamDone.current = false;
-    ttsFallbackWarned.current = false;
+  // Light a node on the reasoning web. One helper per fire, so each agent
+  // blooms the moment it starts; repeats of the same agent inside a short
+  // window (one agent calling several tools) are folded into one pulse.
+  const fire = useCallback((helper: string) => {
+    const now = Date.now();
+    if (lastFire.current.id === helper && now - lastFire.current.at < 1800) return;
+    lastFire.current = { id: helper, at: now };
+    traceN.current += 1;
+    setTrace({ n: traceN.current, trace: [{ helper }] });
+  }, []);
 
-    setActivity([]);
-
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    let full = "";
-    let pending = "";
-    let failure: string | null = null;
-
-    // Light a node on the reasoning web. One helper per fire, so each agent
-    // blooms the moment it starts; repeats of the same agent inside a short
-    // window (one agent calling several tools) are folded into one pulse.
-    const fire = (helper: string) => {
-      const now = Date.now();
-      if (lastFire.current.id === helper && now - lastFire.current.at < 1800) return;
-      lastFire.current = { id: helper, at: now };
-      traceN.current += 1;
-      setTrace({ n: traceN.current, trace: [{ helper }] });
-    };
-
-    const handle = (ev: ApexEvent) => {
+  /* One /api/chat turn: streams the NDJSON events, keeps the web / activity
+   * strip / Deck badges in sync and hands every event to onEvent. Resolves
+   * false when the turn went stale (alive() turned false) mid-stream. */
+  const streamChat = useCallback(async (
+    history: ChatMessage[], signal: AbortSignal, alive: () => boolean, onEvent: (ev: ApexEvent) => void,
+  ): Promise<boolean> => {
+    const common = (ev: ApexEvent) => {
       switch (ev.t) {
-        case "token": {
-          full += ev.v;
-          pending += ev.v;
-          setPartial(full);
-          const [sentences, rest] = takeSentences(pending);
-          pending = rest;
-          enqueue(sentences, id);
-          break;
-        }
         case "state":
           if (ev.v === "reasoning") setReasoning(true);
           else if (ev.v === "thinking" || ev.v === "speaking" || ev.v === "idle") setReasoning(false);
@@ -327,46 +347,122 @@ export function useApexVoice() {
         case "info":
           setActivity((list) => [...list, { key: `info-${list.length}-${ev.v.length}`, kind: "info", text: ev.v }]);
           break;
-        case "error":
-          failure = ev.v;
-          break;
         case "done":
           if (ev.conversationId) { convRef.current = ev.conversationId; setConversationId(ev.conversationId); }
           break;
       }
+      onEvent(ev);
     };
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: providerRef.current, messages: history, ...(convRef.current ? { conversationId: convRef.current } : {}) }),
+      signal,
+    });
+    if (!res.ok || !res.body) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const split = ndjsonSplitter((ev) => { if (alive()) common(ev); });
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (!alive()) { void reader.cancel().catch(() => undefined); return false; }
+      if (done) break;
+      split.push(dec.decode(value, { stream: true }));
+    }
+    split.push(dec.decode());
+    split.end();
+    return true;
+  }, [fire]);
+
+  /* ── realtime ("plný rozhovor") ── */
+  // ask_apex from the realtime model: a normal Apex turn, not spoken by us -
+  // the realtime voice retells the answer.
+  const askApex = useCallback(async (request: string, signal: AbortSignal): Promise<string> => {
+    if (!providerRef.current) return askApexOutput({ text: "", failure: "Není vybraný žádný poskytovatel AI.", actions: [], jobs: [] });
+    // The owner's last utterance is already in the transcript; the model's
+    // request is its complete restatement, so it takes that slot.
+    let history = messagesRef.current.slice(-20);
+    if (history[history.length - 1]?.role === "user") history = history.slice(0, -1);
+    history = [...history, { role: "user", content: request }];
+    setActivity([]);
+    const events: ApexEvent[] = [];
+    try {
+      await streamChat(history, signal, () => !signal.aborted, (ev) => events.push(ev));
+    } catch (e) {
+      if (signal.aborted) throw e;
+      events.push({ t: "error", v: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setReasoning(false);
+    }
+    return askApexOutput(collectTurn(events));
+  }, [streamChat]);
+
+  const rt = useRealtimeVoice({
+    onUserTranscript: (text) => pushMessage({ role: "user", content: text }),
+    onAssistantDelta: (text) => setPartial(text),
+    onAssistantTranscript: (text) => { setPartial(""); pushMessage({ role: "assistant", content: text }); },
+    onAskApex: askApex,
+    onPhase: (p) => {
+      setRtPhase(p);
+      setState(p === "off" ? "idle" : p === "listening" || p === "user" ? "listening" : p === "speaking" ? "speaking" : "thinking");
+    },
+    onError: (msg) => setError(msg),
+    onEnded: (reason) => {
+      setPartial("");
+      setReasoning(false);
+      if (reason === "silence") setActivity((list) => [...list, { key: `info-silence-${Date.now()}`, kind: "info", text: "Rozhovor ukončen (ticho)" }]);
+    },
+  });
+  const { stop: rtStop, start: rtStart, sendText: rtSendText, setOutputMuted: rtSetOutputMuted } = rt;
+  const rtOn = rtPhase !== "off";
+
+  useEffect(() => { rtSetOutputMuted(muted); }, [muted, rtSetOutputMuted]);
+  // Leaving realtime mode (dock switch / Settings) hangs up.
+  useEffect(() => { if (voiceMode !== "realtime" && rtOn) rtStop("user"); }, [voiceMode, rtOn, rtStop]);
+
+  const send = useCallback(async (text: string) => {
+    const content = text.trim();
+    if (!content) return;
+    if (rtOn) {
+      // Typed while the realtime call is open: same conversation, spoken reply.
+      if (rtSendText(content)) { pushMessage({ role: "user", content }); setError(null); }
+      else setError("Realtime hovor ještě není spojený.");
+      return;
+    }
+    if (!provider) { setError("Není vybraný žádný poskytovatel AI."); return; }
+    stopAll();
+    const id = run.current;
+    const history: ChatMessage[] = [...messagesRef.current, { role: "user", content }];
+    messagesRef.current = history;
+    setMessages(history);
+    setPartial("");
+    setError(null);
+    setState("thinking");
+    streamDone.current = false;
+    ttsFallbackWarned.current = false;
+
+    setActivity([]);
+
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    let full = "";
+    let pending = "";
+    let failure: string | null = null;
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider, messages: history, ...(convRef.current ? { conversationId: convRef.current } : {}) }),
-        signal: ctrl.signal,
-      });
-      if (!res.ok || !res.body) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      const consume = (line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        let ev: ApexEvent;
-        try { ev = JSON.parse(trimmed) as ApexEvent; } catch { return; }
-        if (ev && typeof ev === "object" && "t" in ev) handle(ev);
-      };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (id !== run.current) { void reader.cancel().catch(() => undefined); return; }
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          consume(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
+      const fresh = await streamChat(history, ctrl.signal, () => id === run.current, (ev) => {
+        if (ev.t === "token") {
+          full += ev.v;
+          pending += ev.v;
+          setPartial(full);
+          const [sentences, rest] = takeSentences(pending);
+          pending = rest;
+          enqueue(sentences, id);
+        } else if (ev.t === "error") {
+          failure = ev.v;
         }
-      }
-      buf += dec.decode();
-      consume(buf);
+      });
+      if (!fresh) return;
     } catch (e) {
       if (id !== run.current) return;
       failure = e instanceof Error ? e.message : String(e);
@@ -376,16 +472,117 @@ export function useApexVoice() {
     abort.current = null;
     setReasoning(false);
     if (pending.trim()) enqueue([pending.trim()], id);
-    if (full.trim()) setMessages((m) => [...m, { role: "assistant", content: full.trim() }]);
+    if (full.trim()) pushMessage({ role: "assistant", content: full.trim() });
     setPartial("");
     if (failure) setError(failure);
     finishIfDone(id);
-  }, [provider, stopAll, enqueue, finishIfDone]);
+  }, [provider, stopAll, enqueue, finishIfDone, streamChat, pushMessage, rtOn, rtSendText]);
 
   /* ── listening ── */
-  const listen = useCallback(() => {
+  const micDenied = useCallback(() => {
+    setError(MIC_DENIED);
+    // no point reopening a mic we may not use
+    handsFreeRef.current = false;
+    setHandsFreeState(false);
+    save(HANDS_FREE_KEY, "0");
+  }, []);
+
+  const transcribe = useCallback(async (blob: Blob, id: number) => {
+    if (blob.size < 2000) { setState("idle"); return; } // a click, not speech
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    setState("thinking");
+    setInterim("Přepisuji…");
+    try {
+      const form = new FormData();
+      form.append("file", blob, blob.type.includes("mp4") ? "apex.mp4" : "apex.webm");
+      const res = await fetch("/api/stt", { method: "POST", body: form, signal: ctrl.signal });
+      const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+      if (id !== run.current) return;
+      abort.current = null;
+      setInterim("");
+      if (!res.ok) { listenFails.current += 1; setError(data.error || `Přepis řeči selhal (HTTP ${res.status}).`); setState("idle"); return; }
+      listenFails.current = 0;
+      if (data.text?.trim()) void send(data.text);
+      else setState("idle");
+    } catch (e) {
+      if (id !== run.current) return;
+      abort.current = null;
+      setInterim("");
+      listenFails.current += 1;
+      setError(`Přepis řeči selhal: ${e instanceof Error ? e.message : String(e)}`);
+      setState("idle");
+    }
+  }, [send]);
+
+  /* OpenAI STT: record the mic, cut the utterance with the energy VAD
+   * (starts above the room level, ends after ~900 ms of silence, max 60 s),
+   * then upload it to /api/stt. */
+  const listenRecorded = useCallback(async () => {
+    stopAll();
+    const id = run.current;
+    setError(null);
+    const mime = pickRecorderMime((t) => MediaRecorder.isTypeSupported(t));
+    if (!mime) { setError("Prohlížeč neumí nahrávat ve formátu pro OpenAI (webm/mp4) – přepni přepis řeči na prohlížeč."); setState("idle"); return; }
+    setState("listening");
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      if (id !== run.current) return;
+      if (e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError")) micDenied();
+      else { listenFails.current += 1; setError(`Mikrofon nejde otevřít: ${e instanceof Error ? e.message : String(e)}`); }
+      setState("idle");
+      return;
+    }
+    if (id !== run.current) { stream.getTracks().forEach((t) => t.stop()); return; }
+
+    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const frame = new Float32Array(analyser.fftSize);
+    const vad = new EnergyVad();
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const release = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      void ctx.close().catch(() => undefined);
+    };
+    const recording: Recording = {
+      finish: (upload) => {
+        if (rec.current === recording) rec.current = null;
+        if (timer) { clearInterval(timer); timer = null; } else return; // already finished
+        if (!upload || recorder.state === "inactive") {
+          recorder.onstop = null;
+          try { recorder.stop(); } catch { /* inactive */ }
+          release();
+          return;
+        }
+        recorder.onstop = () => {
+          release();
+          if (id === run.current) void transcribe(new Blob(chunks, { type: mime.split(";")[0] }), id);
+        };
+        try { recorder.stop(); } catch { release(); }
+      },
+    };
+    rec.current = recording;
+    timer = setInterval(() => {
+      analyser.getFloatTimeDomainData(frame);
+      const ev = vad.feed(rms(frame), performance.now());
+      if (ev === "speech-start") { listenFails.current = 0; setInterim("Nahrávám…"); }
+      else if (ev === "speech-end" || ev === "max-length") { setInterim(""); recording.finish(true); }
+      else if (ev === "no-speech") { recording.finish(false); if (id === run.current) setState("idle"); }
+    }, 50);
+    recorder.start(250);
+  }, [stopAll, micDenied, transcribe]);
+
+  const listenBrowser = useCallback(() => {
     const Ctor = recognitionCtor();
-    if (!Ctor) { setError("Tenhle prohlížeč neumí rozpoznávat řeč - použij Chrome, nebo piš do pole dole."); return; }
+    if (!Ctor) { setError(NO_RECOGNITION); return; }
     stopAll();
     const id = run.current;
     const r = new Ctor();
@@ -406,11 +603,7 @@ export function useApexVoice() {
     r.onerror = (e) => {
       if (id !== run.current) return;
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setError("Mikrofon není povolený - povol ho v adresním řádku prohlížeče.");
-        // no point reopening a mic we may not use
-        handsFreeRef.current = false;
-        setHandsFreeState(false);
-        save(HANDS_FREE_KEY, "0");
+        micDenied();
       } else if (e.error !== "no-speech" && e.error !== "aborted") {
         listenFails.current += 1;
         setError(`Rozpoznávání řeči: ${e.error}`);
@@ -427,40 +620,60 @@ export function useApexVoice() {
     setError(null);
     setState("listening");
     try { r.start(); } catch { setState("idle"); }
-  }, [stopAll, send]);
+  }, [stopAll, send, micDenied]);
+
+  const listen = useCallback(() => {
+    if (stt === "openai") void listenRecorded();
+    else listenBrowser();
+  }, [stt, listenRecorded, listenBrowser]);
 
   /* The orb's single tap: idle → listen; listening → finish listening;
-   * thinking / speaking → interrupt and listen (barge-in). */
+   * thinking / speaking → interrupt and listen (barge-in). In realtime mode
+   * it starts / hangs up the call (barge-in is built into the call). */
   const tap = useCallback(() => {
-    if (state === "listening") { try { recog.current?.stop(); } catch { /* ended */ } return; }
-    if (!recognitionCtor()) { setError("Tenhle prohlížeč neumí rozpoznávat řeč - použij Chrome, nebo piš do pole dole."); return; }
+    if (voiceMode === "realtime") {
+      if (rtOn) { rtStop("user"); return; }
+      if (!caps.rtc) { setError("Tenhle prohlížeč neumí WebRTC hovor – použij Chrome, Edge nebo Safari."); return; }
+      stopAll();
+      setError(null);
+      void rtStart();
+      return;
+    }
+    if (state === "listening") {
+      if (rec.current) rec.current.finish(true);
+      else { try { recog.current?.stop(); } catch { /* ended */ } }
+      return;
+    }
+    if (!canListen) { setError(stt === "openai" ? "Tenhle prohlížeč neumí nahrávat zvuk - piš do pole dole." : NO_RECOGNITION); return; }
     listen();
-  }, [state, listen]);
+  }, [voiceMode, rtOn, rtStop, caps.rtc, stopAll, rtStart, state, canListen, stt, listen]);
 
   const stop = useCallback(() => {
+    if (rtOn) rtStop("user");
     stopAll();
     setPartial("");
     setState("idle");
-  }, [stopAll]);
+  }, [rtOn, rtStop, stopAll]);
 
   const setHandsFree = useCallback((on: boolean) => {
     handsFreeRef.current = on;
     setHandsFreeState(on);
     save(HANDS_FREE_KEY, on ? "1" : "0");
     listenFails.current = 0;
+    if (voiceMode === "realtime") return; // the call is continuous anyway
     if (on) {
-      if (state === "idle") listen();
+      if (state === "idle" && canListen) listen();
     } else if (state === "listening") {
       stopAll();
       setState("idle");
     }
-  }, [state, listen, stopAll]);
+  }, [voiceMode, state, canListen, listen, stopAll]);
 
   // Hands-free loop: whenever Apex is idle (answer spoken, silence timed out,
   // error handled) and the tab is visible, open the mic again.
   useEffect(() => {
     if (relisten.current) { clearTimeout(relisten.current); relisten.current = null; }
-    if (!handsFree || state !== "idle") return;
+    if (!handsFree || state !== "idle" || voiceMode === "realtime" || !canListen) return;
     const reopen = () => {
       if (!handsFreeRef.current || document.hidden) return;
       listen();
@@ -474,10 +687,28 @@ export function useApexVoice() {
       if (relisten.current) { clearTimeout(relisten.current); relisten.current = null; }
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [handsFree, state, listen]);
+  }, [handsFree, state, voiceMode, canListen, listen]);
+
+  /* Dock mode switch: persists APEX_VOICE_MODE through the Settings API. */
+  const setVoiceMode = useCallback(async (mode: VoiceMode) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "APEX_VOICE_MODE", value: mode }),
+      });
+      if (res.status === 404) { setError("Nastavení zatím není dostupné – režim hlasu teď nejde přepnout."); return; }
+      if (!res.ok) { setError((await res.json().catch(() => null))?.error || `Režim hlasu se nepodařilo uložit (HTTP ${res.status}).`); return; }
+      setError(null);
+      await loadConfig();
+    } catch (e) {
+      setError(`Režim hlasu se nepodařilo uložit: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [loadConfig]);
 
   const reset = useCallback(() => {
     stop();
+    messagesRef.current = [];
     setMessages([]);
     setError(null);
     setActivity([]);
@@ -499,5 +730,7 @@ export function useApexVoice() {
     handsFree, setHandsFree,
     send, tap, stop, reset,
     webState, reasoning, trace, activity, conversationId, dataVersion, newActions,
+    voiceMode, setVoiceMode, stt, realtimeAvailable, voiceHints, refreshVoiceConfig: loadConfig,
+    realtime: { on: rtOn, connecting: rt.connecting, active: rt.active, startedAt: rt.startedAt },
   };
 }

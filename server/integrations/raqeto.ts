@@ -236,6 +236,12 @@ export function raqetoStatus(): RaqetoStatus {
   return statusFrom(me);
 }
 
+/* Settings changed the token/base: forget discovery and status caches. */
+export function resetRaqetoCache() {
+  delete cache.me;
+  delete cache.statuses;
+}
+
 export async function raqetoPing(force = false): Promise<RaqetoStatus> {
   return statusFrom((await raqetoMe(force)) ?? undefined);
 }

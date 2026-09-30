@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, RefreshCw } from "lucide-react";
+import { X, RefreshCw, Settings } from "lucide-react";
 import { ROSTER, ROSTER_BY_KEY } from "@/lib/roster";
 import { apiJson, asList, fmtTime, type ApexStatus } from "./useApexStatus";
 
@@ -1069,7 +1069,7 @@ function GuideTab({ reloadKey }: { reloadKey: string }) {
 const SOCIAL_LABEL: Record<string, string> = { facebook: "Facebook", instagram: "Instagram", linkedin: "LinkedIn" };
 const TTS_LABEL: Record<string, string> = { elevenlabs: "ElevenLabs (serverový hlas)", openai: "OpenAI (serverový hlas)", browser: "Hlas prohlížeče" };
 
-function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | null; notice: string | null; onChanged: () => void }) {
+function IntegrationsTab({ status, notice, onChanged, onEdit }: { status: ApexStatus | null; notice: string | null; onChanged: () => void; onEdit?: (group: string) => void }) {
   const { busy, error, run } = useOp();
   const g = status?.google;
   return (
@@ -1098,6 +1098,7 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
               </button>
             </>
           )}
+        {onEdit && <button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("google")}>Upravit v Nastavení</button>}
         </div>
         {error && <p className="deck-note deck-err" role="alert">{error}</p>}
       </section>
@@ -1114,6 +1115,7 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
           );
         })}
         <p className="deck-meta">Příspěvky se publikují jen po tvém schválení v záložce Schválení.</p>
+        {onEdit && <div><button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("social")}>Upravit v Nastavení</button></div>}
       </section>
 
       <section className="deck-card deck-stack">
@@ -1130,6 +1132,7 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
           <p className="deck-note">Nastav <span className="deck-mono">APEX_VAULT_DIR</span> v <span className="deck-mono">.env.local</span> (výchozí ~/ai-mozek).</p>
         )}
         <p className="deck-meta">Zápisy do vaultu jdou jen přes schválení (s přesným diffem) a commitují se do gitu vaultu.</p>
+        {onEdit && <div><button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("vault")}>Upravit v Nastavení</button></div>}
       </section>
 
       <section className="deck-card deck-stack">
@@ -1153,6 +1156,7 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
         {status && !status.raqeto?.configured && (
           <p className="deck-note">Nastav <span className="deck-mono">RAQETO_API_TOKEN</span> (a případně <span className="deck-mono">RAQETO_API_BASE</span>) v <span className="deck-mono">.env.local</span> a restartuj server.</p>
         )}
+        {onEdit && <div><button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("raqeto")}>Upravit v Nastavení</button></div>}
       </section>
 
       <section className="deck-card deck-stack">
@@ -1164,11 +1168,13 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
             <span className="deck-meta">{p.kind === "api" ? "API klíč" : "předplatné"}{p.tools ? " · nástroje a agenti" : " · jen chat"}</span>
           </div>
         ))}
+        {onEdit && <div><button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("ai")}>Upravit v Nastavení</button></div>}
       </section>
 
       <section className="deck-card deck-row">
         <h3 className="deck-h deck-grow">Hlas (TTS)</h3>
         <span className="deck-meta">{TTS_LABEL[status?.tts ?? ""] ?? status?.tts ?? "–"}</span>
+        {onEdit && <button type="button" className="deck-btn deck-btn-sm" onClick={() => onEdit("voice")}>Upravit v Nastavení</button>}
       </section>
     </div>
   );
@@ -1221,13 +1227,14 @@ function LogTab({ reloadKey }: { reloadKey: string }) {
 
 /* ─────────────────────────── Drawer ─────────────────────────── */
 
-export default function ApexDeck({ section, onSection, onClose, status, refreshKey, onChanged }: {
+export default function ApexDeck({ section, onSection, onClose, status, refreshKey, onChanged, onOpenSettings }: {
   section: DeckSection | null;
   onSection: (s: DeckSection) => void;
   onClose: () => void;
   status: ApexStatus | null;
   refreshKey: number;
   onChanged: () => void;
+  onOpenSettings?: (group?: string) => void;
 }) {
   const [tick, setTick] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1243,8 +1250,15 @@ export default function ApexDeck({ section, onSection, onClose, status, refreshK
     else if (google === "error") setNotice(`Připojení Googlu selhalo${url.searchParams.get("reason") ? `: ${url.searchParams.get("reason")}` : "."}`);
     if (target || google) onSection(target ?? "integrations");
     if (url.searchParams.has("deck") || google || url.searchParams.has("reason")) {
-      ["deck", "google", "reason"].forEach((k) => url.searchParams.delete(k));
-      window.history.replaceState(window.history.state, "", url.pathname + (url.search || "") + url.hash);
+      // null state (not history.state) lets the app router adopt the new URL -
+      // with its own state it would restore the param on its next update. Deferred
+      // until after the router's own mount effect.
+      const t = setTimeout(() => {
+        const u = new URL(window.location.href);
+        ["deck", "google", "reason"].forEach((k) => u.searchParams.delete(k));
+        window.history.replaceState(null, "", u.pathname + (u.search || "") + u.hash);
+      }, 0);
+      return () => clearTimeout(t);
     }
   }, [onSection]);
 
@@ -1275,6 +1289,11 @@ export default function ApexDeck({ section, onSection, onClose, status, refreshK
     <div className="deck" role="dialog" aria-modal="false" aria-labelledby="deck-title">
       <header className="deck-head">
         <h2 id="deck-title" className="deck-brand">Command Deck</h2>
+        {onOpenSettings && (
+          <button type="button" className="deck-btn deck-btn-sm" onClick={() => onOpenSettings()} title="Klíče, modely, hlas a integrace">
+            <Settings size={14} aria-hidden="true" /> Nastavení
+          </button>
+        )}
         <button type="button" className="deck-icon" aria-label="Obnovit" title="Obnovit" onClick={() => { setTick((x) => x + 1); onChanged(); }}>
           <RefreshCw size={15} />
         </button>
@@ -1297,7 +1316,7 @@ export default function ApexDeck({ section, onSection, onClose, status, refreshK
         {section === "loops" && <LoopsTab reloadKey={reloadKey} />}
         {section === "memory" && <MemoryTab reloadKey={reloadKey} status={status} />}
         {section === "guide" && <GuideTab reloadKey={reloadKey} />}
-        {section === "integrations" && <IntegrationsTab status={status} notice={notice} onChanged={onChanged} />}
+        {section === "integrations" && <IntegrationsTab status={status} notice={notice} onChanged={onChanged} onEdit={onOpenSettings} />}
         {section === "log" && <LogTab reloadKey={reloadKey} />}
       </div>
     </div>

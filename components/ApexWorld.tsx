@@ -10,7 +10,9 @@
  * example requests). Tapping the orb talks to Apex (useApexVoice); its voice
  * state and the backend's trace events drive the web (standby → listening →
  * processing → reasoning → speaking, consulted agents light up). The Command
- * Deck drawer holds approvals, jobs, CRM, loops, memory, guide, integrations.
+ * Deck drawer holds approvals, jobs, CRM, loops, memory, guide, integrations;
+ * the Nastavení drawer (dock gear, Deck, ?settings=<group>) holds keys, models
+ * and voice modes. Only one of the two drawers is open at a time.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,6 +22,7 @@ import ShaderBackgroundJs from "./ShaderBackground";
 import OrbStatusBar from "./OrbStatusBar";
 import ApexChatDock from "./ApexChatDock";
 import ApexDeck, { type DeckSection } from "./ApexDeck";
+import ApexSettings from "./ApexSettings";
 import { useApexVoice } from "./useApexVoice";
 import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
 import { ROSTER, ROSTER_BY_KEY, type AgentStatus } from "@/lib/roster";
@@ -238,6 +241,7 @@ export default function ApexWorld() {
   const [selected, setSelected] = useState<NodeSel | null>(null);
   const [reduced, setReduced] = useState(false);
   const [deck, setDeck] = useState<DeckSection | null>(null);
+  const [settings, setSettings] = useState<string | null>(null);
 
   // The voice loop's state drives the backdrop, the light-cast and the
   // reasoning web's activity level. A tap on the orb starts / ends listening.
@@ -252,8 +256,10 @@ export default function ApexWorld() {
     setSelected(n);
   };
   const closeAgent = useCallback(() => setSelected(null), []);
-  const openDeck = useCallback((section: DeckSection = "approvals") => { setSelected(null); setDeck(section); }, []);
+  const openDeck = useCallback((section: DeckSection = "approvals") => { setSelected(null); setSettings(null); setDeck(section); }, []);
   const closeDeck = useCallback(() => setDeck(null), []);
+  const openSettings = useCallback((group = "") => { setSelected(null); setDeck(null); setSettings(group); }, []);
+  const closeSettings = useCallback(() => setSettings(null), []);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -341,7 +347,7 @@ export default function ApexWorld() {
       {/* equalizer + STANDBY cluster */}
       <OrbStatusBar state={orbState} />
 
-      <ApexChatDock voice={voice} pending={pending} onOpenDeck={openDeck} />
+      <ApexChatDock voice={voice} pending={pending} onOpenDeck={openDeck} onOpenSettings={() => openSettings()} />
 
       {selected && (
         <AgentCockpit
@@ -360,6 +366,15 @@ export default function ApexWorld() {
         onClose={closeDeck}
         status={status}
         refreshKey={voice.dataVersion}
+        onChanged={refreshStatus}
+        onOpenSettings={openSettings}
+      />
+
+      <ApexSettings
+        group={settings}
+        onGroup={openSettings}
+        onClose={closeSettings}
+        onOpenDeck={openDeck}
         onChanged={refreshStatus}
       />
     </div>

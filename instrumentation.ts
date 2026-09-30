@@ -9,6 +9,7 @@ export async function register() {
   }
   if (process.env.NEXT_RUNTIME === "nodejs") {
     try {
+      (await import("./server/settings")).applySettings();
       await import("./server/tools");
       const { startScheduler } = await import("./server/loops");
       startScheduler();

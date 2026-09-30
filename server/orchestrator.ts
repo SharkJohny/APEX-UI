@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { all, get, run as dbRun } from "./db";
 import { endRun, getRun, startRun, type ApexEvent, type Run } from "./events";
 import { AGENTS, systemPrompt } from "./agents";
-import { providerSupportsTools, runLlm } from "./llm";
+import { llmTimeoutMs, providerSupportsTools, runLlm } from "./llm";
 import { untrusted } from "./tools/registry";
 import { vaultDir, vaultPersona } from "./vault";
 import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
@@ -14,7 +14,7 @@ import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 const HISTORY_TURNS = 12;
-const TIMEOUT_MS = Number(process.env.APEX_LLM_TIMEOUT_MS || 600_000);
+
 
 /* Each run owns an AbortController that follows its parent's signal. When a
  * run ends - normally, by error or timeout - it aborts, so every specialist it
@@ -108,7 +108,7 @@ export async function runTurn(opts: {
       run: tools ? run : undefined,
       onToken: (v) => opts.emit({ t: "token", v }),
       signal: ctl.signal,
-      timeoutMs: TIMEOUT_MS,
+      timeoutMs: llmTimeoutMs(),
     });
     if (out.text) dbRun("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)", conversationId, "assistant", out.text);
     opts.emit({ t: "done", conversationId });
@@ -172,7 +172,7 @@ export async function runSpecialist(opts: {
       native: def.native,
       signal: ctl.signal,
       // a delegated job must finish well inside its parent's budget
-      timeoutMs: depth > 0 ? Math.round(TIMEOUT_MS * 0.75) : TIMEOUT_MS,
+      timeoutMs: depth > 0 ? Math.round(llmTimeoutMs() * 0.75) : llmTimeoutMs(),
     });
     dbRun("UPDATE jobs SET output = ?, status = 'done', finished_at = datetime('now') WHERE id = ?", out.text, jobId);
     emit({ t: "job", id: jobId, agent: opts.agent, status: "done", summary: out.text.slice(0, 140) });

@@ -203,6 +203,11 @@ async function verifyLinkedIn(): Promise<NetworkResult> {
   }
 }
 
+/* Settings changed a social token: verify again on next request. */
+export function resetSocialVerify() {
+  delete g.__apexSocialVerify;
+}
+
 export async function verifySocial(): Promise<Record<SocialNetwork, NetworkResult>> {
   const now = Date.now();
   if (g.__apexSocialVerify && now - g.__apexSocialVerify.at < VERIFY_TTL_MS) {

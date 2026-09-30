@@ -194,12 +194,19 @@ const MIGRATIONS: string[] = [
     value TEXT NOT NULL
   );
   `,
+  // 2: owner settings edited in the app (server/settings.ts) - applied over
+  // process.env at boot; plus which model served each LLM call.
+  `
+  CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  ALTER TABLE llm_calls ADD COLUMN model TEXT;
+  `,
 ];
 
-function open(): DatabaseSync {
-  mkdirSync(DATA_DIR, { recursive: true });
-  const db = new DatabaseSync(join(DATA_DIR, "apex.db"));
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+function migrate(db: DatabaseSync) {
   const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
   for (let v = user_version; v < MIGRATIONS.length; v++) {
     db.exec("BEGIN");
@@ -212,6 +219,13 @@ function open(): DatabaseSync {
       throw e;
     }
   }
+}
+
+function open(): DatabaseSync {
+  mkdirSync(DATA_DIR, { recursive: true });
+  const db = new DatabaseSync(join(DATA_DIR, "apex.db"));
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  migrate(db);
   // Holds OAuth tokens: owner-only file permissions.
   for (const f of ["apex.db", "apex.db-wal", "apex.db-shm"]) {
     const p = join(DATA_DIR, f);
@@ -229,8 +243,14 @@ function open(): DatabaseSync {
 
 const g = globalThis as { __apexDb?: DatabaseSync };
 
+/* A hot-reloaded module reuses the cached connection; still apply any
+ * migrations appended since it was opened. */
+let migrated = false;
+
 export function db(): DatabaseSync {
   if (!g.__apexDb) g.__apexDb = open();
+  else if (!migrated) migrate(g.__apexDb);
+  migrated = true;
   return g.__apexDb;
 }
 

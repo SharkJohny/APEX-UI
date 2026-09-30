@@ -1,15 +1,16 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Ear, EarOff, LayoutGrid, Loader2, Mic, MicOff, RotateCcw, Send, Square, Volume2, VolumeX } from "lucide-react";
-import type { Activity, useApexVoice } from "./useApexVoice";
+import { Ear, EarOff, LayoutGrid, Loader2, Mic, MicOff, PhoneOff, RotateCcw, Send, Settings, Square, Volume2, VolumeX } from "lucide-react";
+import type { Activity, VoiceMode, useApexVoice } from "./useApexVoice";
 import type { DeckSection } from "./ApexDeck";
 import { ROSTER_BY_KEY } from "@/lib/roster";
 
 /* Bottom-right conversation panel: transcript, the current turn's agent
  * activity (jobs, proposed actions, notes), text input (for browsers without
- * speech recognition, or just typing), provider picker, mic / stop / mute and
- * the Command Deck button with the pending-approvals badge. */
+ * speech recognition, or just typing), provider picker, mic / stop / mute,
+ * the Command Deck button with the pending-approvals badge, the Settings gear
+ * and the voice mode switch (browser / OpenAI / Realtime). */
 
 type Voice = ReturnType<typeof useApexVoice>;
 
@@ -30,12 +31,39 @@ const iconBtn: React.CSSProperties = {
 
 const TTS_NAME: Record<Voice["tts"], string> = { elevenlabs: "ElevenLabs", openai: "OpenAI TTS", browser: "hlas prohlížeče" };
 
-export default function ApexChatDock({ voice, pending, onOpenDeck }: { voice: Voice; pending: number; onOpenDeck: (s?: DeckSection) => void }) {
-  const { state, messages, partial, interim, error, providers, provider, setProvider, tts, muted, setMuted, canListen, handsFree, setHandsFree, send, tap, stop, reset, reasoning, activity } = voice;
+const MODES: { id: VoiceMode; label: string; title: string }[] = [
+  { id: "browser", label: "Prohlížeč", title: "Rozpoznávání řeči v prohlížeči, odpovědi čte nastavený hlas." },
+  { id: "openai", label: "OpenAI", title: "Mozek Apexe + hlas OpenAI (volitelně i přepis řeči přes OpenAI)." },
+  { id: "realtime", label: "Realtime", title: "Plný hlasový rozhovor přes OpenAI Realtime; data a akce řeší Apex." },
+];
+const NO_KEY_TITLE = "Chybí OpenAI API klíč – otevři Nastavení";
+
+export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSettings }: {
+  voice: Voice; pending: number; onOpenDeck: (s?: DeckSection) => void; onOpenSettings?: () => void;
+}) {
+  const { state, messages, partial, interim, error, providers, provider, setProvider, tts, muted, setMuted, canListen, handsFree, setHandsFree, send, tap, stop, reset, reasoning, activity, voiceMode, setVoiceMode, realtimeAvailable, voiceHints, realtime } = voice;
   const [draft, setDraft] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const isRealtime = voiceMode === "realtime";
   const logRef = useRef<HTMLDivElement>(null);
   const busy = state === "thinking" || state === "speaking";
   const chipsBeforeLast = activity.length > 0 && !partial && messages[messages.length - 1]?.role === "assistant";
+
+  // Elapsed-minutes counter for the REALTIME badge.
+  useEffect(() => {
+    if (!realtime.startedAt) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, [realtime.startedAt]);
+  const minutes = realtime.startedAt ? Math.max(0, Math.floor((now - realtime.startedAt) / 60_000)) : 0;
+
+  const pickMode = async (m: VoiceMode) => {
+    if (m === voiceMode || switching) return;
+    setSwitching(true);
+    try { await setVoiceMode(m); } finally { setSwitching(false); }
+  };
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
@@ -70,8 +98,19 @@ export default function ApexChatDock({ voice, pending, onOpenDeck }: { voice: Vo
           }}
         />
         <span role="status" style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.8, flex: 1, whiteSpace: "nowrap" }}>
-          {state === "thinking" && reasoning ? "Agenti pracují…" : handsFree && state === "listening" ? "Trvale poslouchám…" : LABEL[state]}
+          {realtime.connecting ? "Spojuji…" : state === "thinking" && reasoning ? "Agenti pracují…" : handsFree && state === "listening" && !isRealtime ? "Trvale poslouchám…" : LABEL[state]}
         </span>
+        {realtime.on && (
+          <span
+            title="Probíhá plný hlasový rozhovor (OpenAI Realtime) – účtuje se podle délky. Klepnutím na orb ho ukončíš."
+            style={{
+              flex: "none", padding: "2px 6px", borderRadius: 6, fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.1em",
+              color: "#04080f", background: CYAN, boxShadow: `0 0 8px ${CYAN}`,
+            }}
+          >
+            REALTIME {minutes} min
+          </span>
+        )}
         <button
           type="button"
           onClick={() => onOpenDeck(pending > 0 ? "approvals" : "jobs")}
@@ -109,12 +148,50 @@ export default function ApexChatDock({ voice, pending, onOpenDeck }: { voice: Vo
         <button type="button" onClick={reset} aria-label="Nová konverzace" title="Nová konverzace" style={iconBtn}>
           <RotateCcw size={15} />
         </button>
+        {onOpenSettings && (
+          <button type="button" onClick={onOpenSettings} aria-label="Nastavení" title="Nastavení" style={iconBtn}>
+            <Settings size={15} />
+          </button>
+        )}
       </header>
+
+      <div role="radiogroup" aria-label="Režim hlasu" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+        <span style={{ opacity: 0.6, fontFamily: "var(--font-mono)", letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 10.5 }}>Hlas</span>
+        {MODES.map((m) => {
+          const locked = m.id !== "browser" && !realtimeAvailable;
+          const on = voiceMode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              aria-disabled={locked || switching}
+              onClick={() => { if (locked) onOpenSettings?.(); else void pickMode(m.id); }}
+              title={locked ? NO_KEY_TITLE : m.title}
+              style={{
+                padding: "3px 9px", borderRadius: 999, fontSize: 11.5, cursor: locked ? "help" : "pointer",
+                border: `1px solid ${on ? CYAN : "rgba(240,237,232,0.16)"}`,
+                background: on ? "rgba(13,210,255,0.16)" : "rgba(240,237,232,0.04)",
+                color: on ? CYAN : "rgba(240,237,232,0.85)",
+                opacity: locked ? 0.4 : switching && !on ? 0.6 : 1,
+              }}
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+      {voiceHints.length > 0 && (
+        <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.4, opacity: 0.7 }}>{voiceHints.join(" ")}</p>
+      )}
 
       <div ref={logRef} aria-live="polite" style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
         {messages.length === 0 && !partial && !interim && (
           <p style={{ margin: 0, opacity: 0.6, lineHeight: 1.45 }}>
-            {canListen ? "Klepni na orb a mluv, nebo napiš zprávu dole." : "Napiš zprávu dole (rozpoznávání řeči funguje v Chrome)."}
+            {isRealtime
+              ? "Klepni na orb a začni plný hlasový rozhovor. Dalším klepnutím ho ukončíš."
+              : canListen ? "Klepni na orb a mluv, nebo napiš zprávu dole." : "Napiš zprávu dole (rozpoznávání řeči funguje v Chrome)."}
           </p>
         )}
         {messages.map((m, i) => (
@@ -146,7 +223,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck }: { voice: Vo
             background: "rgba(240,237,232,0.06)", color: "#f0ede8", border: "1px solid rgba(240,237,232,0.16)", outline: "none",
           }}
         />
-        {busy ? (
+        {busy && !realtime.on ? (
           <button type="button" onClick={stop} aria-label="Zastavit" title="Zastavit" style={{ ...iconBtn, color: GOLD }}>
             <Square size={15} />
           </button>
@@ -159,30 +236,35 @@ export default function ApexChatDock({ voice, pending, onOpenDeck }: { voice: Vo
           type="button"
           onClick={tap}
           disabled={!canListen}
-          aria-pressed={state === "listening"}
-          aria-label={state === "listening" ? "Přestat poslouchat" : "Mluvit"}
-          title={canListen ? (state === "listening" ? "Přestat poslouchat" : "Mluvit") : "Prohlížeč neumí rozpoznávat řeč"}
+          aria-pressed={isRealtime ? realtime.on : state === "listening"}
+          aria-label={isRealtime ? (realtime.on ? "Ukončit rozhovor" : "Zahájit rozhovor") : state === "listening" ? "Přestat poslouchat" : "Mluvit"}
+          title={!canListen
+            ? (isRealtime ? "Prohlížeč neumí WebRTC hovor" : "Prohlížeč neumí rozpoznávat řeč")
+            : isRealtime ? (realtime.on ? "Ukončit plný rozhovor" : "Zahájit plný rozhovor (Realtime)")
+            : state === "listening" ? "Přestat poslouchat" : "Mluvit"}
           style={{
             ...iconBtn,
             opacity: canListen ? 1 : 0.45,
-            color: state === "listening" ? "#04080f" : CYAN,
-            background: state === "listening" ? CYAN : iconBtn.background,
+            color: (isRealtime ? realtime.on : state === "listening") ? "#04080f" : CYAN,
+            background: (isRealtime ? realtime.on : state === "listening") ? CYAN : iconBtn.background,
           }}
         >
-          {canListen ? <Mic size={16} /> : <MicOff size={16} />}
+          {!canListen ? <MicOff size={16} /> : isRealtime && realtime.on ? <PhoneOff size={16} /> : <Mic size={16} />}
         </button>
         <button
           type="button"
           onClick={() => setHandsFree(!handsFree)}
-          disabled={!canListen}
+          disabled={!canListen || isRealtime}
           aria-pressed={handsFree}
           aria-label={handsFree ? "Vypnout trvalé poslouchání" : "Zapnout trvalé poslouchání"}
-          title={canListen
+          title={isRealtime
+            ? "V režimu Realtime poslouchám průběžně po celý rozhovor."
+            : canListen
             ? (handsFree ? "Trvalé poslouchání je zapnuté – po každé odpovědi poslouchám dál. Klikni pro vypnutí." : "Trvalé poslouchání: mluv, pauzou odešli, po odpovědi poslouchám dál.")
             : "Prohlížeč neumí rozpoznávat řeč"}
           style={{
             ...iconBtn,
-            opacity: canListen ? 1 : 0.45,
+            opacity: canListen && !isRealtime ? 1 : 0.45,
             color: handsFree ? "#04080f" : CYAN,
             background: handsFree ? CYAN : iconBtn.background,
             boxShadow: handsFree ? `0 0 12px ${CYAN}` : "none",
