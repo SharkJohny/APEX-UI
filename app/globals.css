@@ -291,3 +291,80 @@ body {
 .dock-action-evidence { font-family: var(--font-mono); font-size: 11px; color: rgba(240, 237, 232, 0.75); min-width: 0; overflow-wrap: anywhere; }
 .dock-action-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 .dock-action-btns:empty { display: none; }
+
+/* ── Approval popup (components/ApexApprovalPopup.tsx) ── */
+.apop-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(2, 6, 12, 0.55); backdrop-filter: blur(3px);
+  animation: apop-fade 0.16s ease-out;
+}
+.apop {
+  width: min(640px, 100%); max-height: min(86vh, 820px);
+  display: flex; flex-direction: column; min-height: 0;
+  background: rgba(6, 13, 24, 0.94); backdrop-filter: blur(18px);
+  border: 1px solid rgba(245, 166, 35, 0.38); border-radius: 16px;
+  box-shadow: 0 0 44px rgba(245, 166, 35, 0.1), 0 16px 48px rgba(0, 0, 0, 0.6);
+  color: #f0ede8; font-size: 13.5px; user-select: text;
+  animation: apop-rise 0.18s ease-out;
+}
+.apop:focus { outline: none; }
+.apop:focus-visible { outline: 2px solid rgba(13, 210, 255, 0.6); outline-offset: 2px; }
+.apop-head {
+  display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; flex: none;
+  border-bottom: 1px solid rgba(240, 237, 232, 0.1);
+}
+.apop-kicker {
+  flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.2em; text-transform: uppercase; color: #f5a623;
+}
+.apop-nav { display: inline-flex; align-items: center; gap: 6px; }
+.apop-count { font-family: var(--font-mono); font-size: 11px; color: rgba(240, 237, 232, 0.7); white-space: nowrap; }
+.apop-body { padding: 14px 16px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.apop-label {
+  margin: 0; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: #7df1ff; overflow-wrap: anywhere;
+}
+.apop-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.apop-meta { margin: 0; font-size: 11.5px; color: rgba(240, 237, 232, 0.6); }
+.apop-details { margin-top: 6px; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(240, 237, 232, 0.08); }
+.apop-result {
+  margin: 0 16px 4px; padding: 8px 10px; border-radius: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; overflow-wrap: anywhere;
+}
+.apop-ok { color: #6ee7b7; background: rgba(52, 211, 153, 0.08); border: 1px solid rgba(52, 211, 153, 0.3); }
+.apop-err { color: #ff9b9b; background: rgba(248, 113, 113, 0.08); border: 1px solid rgba(248, 113, 113, 0.3); }
+.apop-evidence { flex: 1 1 100%; max-height: 120px; overflow: auto; font-family: var(--font-mono); font-size: 11px; color: rgba(240, 237, 232, 0.75); min-width: 0; overflow-wrap: anywhere; }
+.apop-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px 14px; flex: none;
+  border-top: 1px solid rgba(240, 237, 232, 0.08);
+}
+.apop-actions .deck-btn { min-height: 34px; }
+.apop-deck { margin-left: auto; }
+@media (max-width: 520px) {
+  .apop-backdrop { align-items: flex-end; padding: 8px; }
+  .apop { max-height: 92vh; }
+  .apop-actions .deck-btn { flex: 1 1 40%; }
+  .apop-deck { margin-left: 0; }
+}
+
+.apop-toast {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 90;
+  max-width: calc(100vw - 32px); display: flex; align-items: center; gap: 2px;
+  background: rgba(6, 13, 24, 0.94); backdrop-filter: blur(14px);
+  border: 1px solid rgba(245, 166, 35, 0.5); border-radius: 999px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); animation: apop-fade 0.16s ease-out;
+}
+.apop-toast-main, .apop-toast-x {
+  background: none; border: none; color: #ffd080; cursor: pointer; font: inherit; font-size: 12.5px;
+}
+.apop-toast-main { display: inline-flex; align-items: center; gap: 8px; padding: 8px 6px 8px 14px; min-width: 0; text-align: left; }
+.apop-toast-x { display: inline-flex; padding: 8px 12px 8px 6px; color: rgba(240, 237, 232, 0.6); }
+.apop-toast-main:hover { color: #fff; }
+.apop-toast-x:hover { color: #f0ede8; }
+.apop-toast-main:focus-visible, .apop-toast-x:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; border-radius: 999px; }
+.apop-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #f5a623; box-shadow: 0 0 8px #f5a623; }
+
+@keyframes apop-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes apop-rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .apop-backdrop, .apop, .apop-toast { animation: none; } }

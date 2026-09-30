@@ -12,7 +12,8 @@
  * processing → reasoning → speaking, consulted agents light up). The Command
  * Deck drawer holds approvals, jobs, CRM, loops, memory, guide, integrations;
  * the Nastavení drawer (dock gear, Deck, ?settings=<group>) holds keys, models
- * and voice modes. Only one of the two drawers is open at a time.
+ * and voice modes. Only one of the two drawers is open at a time. Pending
+ * approvals can pop up as a modal (ApexApprovalPopup, setting APEX_APPROVAL_POPUP).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,6 +24,7 @@ import OrbStatusBar from "./OrbStatusBar";
 import ApexChatDock from "./ApexChatDock";
 import ApexDeck, { ACTIONS_CHANGED, CopyButton, type DeckSection } from "./ApexDeck";
 import ApexSettings from "./ApexSettings";
+import ApexApprovalPopup from "./ApexApprovalPopup";
 import { useApexVoice } from "./useApexVoice";
 import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
 import { ROSTER, ROSTER_BY_KEY, type AgentStatus } from "@/lib/roster";
@@ -391,6 +393,8 @@ export default function ApexWorld() {
         onOpenDeck={openDeck}
         onChanged={refreshStatus}
       />
+
+      <ApexApprovalPopup onOpenDeck={() => openDeck("approvals")} suppressed={deck === "approvals"} />
     </div>
   );
 }

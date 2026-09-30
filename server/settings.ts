@@ -215,6 +215,18 @@ const GROUPS: GroupDef[] = [
     ],
     actions: [{ id: "test-vault", label: "Zkontrolovat trezor", test: "vault" }],
   },
+  {
+    id: "ui",
+    title: "Rozhraní",
+    description: "Jak se Apex chová na obrazovce.",
+    links: [],
+    fields: [
+      {
+        key: "APEX_APPROVAL_POPUP", label: "Schválení vyskakují jako okno", type: "bool", default: "1",
+        help: "Nový návrh ke schválení (e-mail, zápis do AI Mozku, změna v Raqetu…) se hned otevře v okně uprostřed obrazovky. Návrhy čekající z dřívějška se ukážou jednou za návštěvu. Vypnuto = jen odznak a záložka Schválení v Decku.",
+      },
+    ],
+  },
 ];
 
 const FIELDS = new Map<string, FieldDef>(GROUPS.flatMap((g) => g.fields.map((f) => [f.key, f] as const)));

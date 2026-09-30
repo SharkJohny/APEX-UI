@@ -10,5 +10,6 @@ import "./social";
 import "./loops";
 import "./raqeto";
 import "./vault";
+import "./history";
 
 export { allTools, callTool, getTool, jsonSchema } from "./registry";

@@ -213,51 +213,85 @@ export function useApexVoice() {
     });
   }, []);
 
-  const speakOne = useCallback((text: string, id: number): Promise<void> => {
-    if (mutedRef.current) return Promise.resolve();
-    if (tts !== "browser") {
-      const ctrl = new AbortController();
-      ttsAbort.current = ctrl;
-      return fetch("/api/tts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal: ctrl.signal })
-        .then(async (r) => (r.ok ? r.blob() : Promise.reject(new Error((await r.json().catch(() => null))?.error || `HTTP ${r.status}`))))
-        .then((blob) => new Promise<void>((resolve) => {
-          if (ttsAbort.current === ctrl) ttsAbort.current = null;
-          if (id !== run.current || mutedRef.current) return resolve();
-          const el = new Audio(URL.createObjectURL(blob));
-          audio.current = el;
-          el.onended = el.onerror = () => { URL.revokeObjectURL(el.src); resolve(); };
-          el.play().catch(() => resolve());
-        }))
-        .catch((e: unknown) => {
-          if (ttsAbort.current === ctrl) ttsAbort.current = null;
-          // Aborted on purpose (barge-in, mute, stop) - not a failure, just stop.
-          if (id !== run.current || mutedRef.current) return undefined;
-          if (!ttsFallbackWarned.current) {
-            ttsFallbackWarned.current = true;
-            const reason = e instanceof Error ? e.message : String(e);
-            setError(`Hlas serveru selhal – mluvím hlasem prohlížeče: ${reason}`);
-          }
-          return speakBrowser(text, id);
-        });
+  /* Server voice: one request per chunk, not per sentence - separate
+   * generations drift in timbre and intonation, so a reply cut into many tiny
+   * requests sounds like several speakers. The first chunk is one sentence (fast
+   * start); later chunks merge queued sentences up to ~600 chars, and the next
+   * chunk is fetched while the current one plays (no gaps). */
+  const fetchTts = useCallback((text: string, ctrl: AbortController): Promise<Blob> =>
+    fetch("/api/tts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal: ctrl.signal })
+      .then(async (r) => (r.ok ? r.blob() : Promise.reject(new Error((await r.json().catch(() => null))?.error || `HTTP ${r.status}`)))), []);
+
+  const playBlob = useCallback((blob: Blob, id: number): Promise<void> => new Promise<void>((resolve) => {
+    if (id !== run.current || mutedRef.current) return resolve();
+    const el = new Audio(URL.createObjectURL(blob));
+    audio.current = el;
+    el.onended = el.onerror = () => { URL.revokeObjectURL(el.src); resolve(); };
+    el.play().catch(() => resolve());
+  }), []);
+
+  const serverFailed = useCallback((e: unknown, text: string, id: number): Promise<void> => {
+    // Aborted on purpose (barge-in, mute, stop) - not a failure, just stop.
+    if (id !== run.current || mutedRef.current) return Promise.resolve();
+    if (!ttsFallbackWarned.current) {
+      ttsFallbackWarned.current = true;
+      const reason = e instanceof Error ? e.message : String(e);
+      setError(`Hlas serveru selhal – mluvím hlasem prohlížeče: ${reason}`);
     }
     return speakBrowser(text, id);
-  }, [tts, speakBrowser]);
+  }, [speakBrowser]);
+
+  const CHUNK_MAX = 600;
+  const takeChunk = (first: boolean): string => {
+    if (!queue.current.length) return "";
+    let text = queue.current.shift()!;
+    while (!first && queue.current.length && text.length + 1 + queue.current[0].length <= CHUNK_MAX) {
+      text += " " + queue.current.shift()!;
+    }
+    return text;
+  };
 
   const pump = useCallback(async (id: number) => {
     if (playing.current === id) return;
     playing.current = id;
-    while (id === run.current && queue.current.length) {
-      const next = queue.current.shift()!;
-      if (mutedRef.current) continue;
-      setState("speaking");
-      await speakOne(next, id);
+    if (tts === "browser") {
+      while (id === run.current && queue.current.length) {
+        const next = queue.current.shift()!;
+        if (mutedRef.current) continue;
+        setState("speaking");
+        await speakBrowser(next, id);
+      }
+    } else {
+      const ctrl = new AbortController();
+      ttsAbort.current = ctrl;
+      let first = true;
+      let ahead: { text: string; audio: Promise<Blob> } | null = null;
+      const request = (text: string) => {
+        const audio = fetchTts(text, ctrl);
+        audio.catch(() => undefined); // handled when played
+        return { text, audio };
+      };
+      while (id === run.current && !mutedRef.current) {
+        const cur = ahead ?? (queue.current.length ? request(takeChunk(first)) : null);
+        ahead = null;
+        if (!cur) break;
+        first = false;
+        setState("speaking");
+        if (queue.current.length) ahead = request(takeChunk(false));
+        try {
+          await playBlob(await cur.audio, id);
+        } catch (e) {
+          await serverFailed(e, cur.text, id);
+        }
+      }
+      if (ttsAbort.current === ctrl) ttsAbort.current = null;
     }
     if (playing.current === id) playing.current = null;
     // Spoke everything so far but the reply is still streaming (e.g. a
     // specialist is working): go back to thinking, not a silent "speaking".
     if (id === run.current && !streamDone.current) setState("thinking");
     finishIfDone(id);
-  }, [speakOne, finishIfDone]);
+  }, [tts, speakBrowser, fetchTts, playBlob, serverFailed, finishIfDone]);
 
   const enqueue = useCallback((sentences: string[], id: number) => {
     if (!sentences.length || id !== run.current || mutedRef.current) return;

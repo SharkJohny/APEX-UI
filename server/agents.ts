@@ -29,6 +29,7 @@ const RAQETO_WRITE = [
   "raqeto_interaction_mark_replied", "raqeto_comment_internal",
 ];
 const VAULT_READ = ["vault_search", "vault_read", "vault_index", "vault_log", "vault_list", "vault_links"];
+const HISTORY = ["conversations_recent", "conversation_read", "memory_search_conversations"];
 const READ_DATA = ["memory_*", "crm_*", "tasks_*", "projects_*", "finance_*", "analytics_*", ...RAQETO_READ, "jobs_recent", ...VAULT_READ];
 
 export const SPECIALISTS: AgentKey[] = [
@@ -39,7 +40,7 @@ export const SPECIALISTS: AgentKey[] = [
 export const AGENTS: Partial<Record<AgentKey, AgentDef>> = {
   chief_of_staff: {
     key: "chief_of_staff",
-    tools: [...READ_DATA, ...RAQETO_WRITE, "gmail_*", "calendar_*", "drive_*", "propose_*", "delegate_to_*", "loops_*"],
+    tools: [...READ_DATA, ...RAQETO_WRITE, "actions_list", ...HISTORY, "gmail_*", "calendar_*", "drive_*", "propose_*", "delegate_to_*", "loops_*"],
     persona: `Jsi Chief of staff – pravá ruka majitele firmy a jediný hlas Apexu, se kterým uživatel mluví.
 Řídíš tým specialistů. Jednoduché věci vyřeš sám (i pomocí nástrojů), odbornou práci deleguj nástrojem delegate_to_<specialista> se zadáním, které obsahuje veškerý potřebný kontext – specialista nevidí konverzaci.
 Než odpovíš na cokoli o klientech, projektech, penězích nebo minulosti, podívej se do dat (memory_search, crm_*, tasks_*…). Nic si nevymýšlej: čísla a fakta ber jen z nástrojů.
@@ -49,7 +50,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   strategist: {
     key: "strategist",
-    tools: READ_DATA,
+    tools: [...READ_DATA, ...HISTORY],
     persona: "Jsi Strategist. Díváš se na velký obraz: cíle, milníky, rizika a příležitosti. Opírej se o data z nástrojů a navrhuj konkrétní kroky s prioritou.",
   },
   researcher: {
@@ -70,7 +71,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   sales: {
     key: "sales",
-    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks", "raqeto_overview", "raqeto_interactions", "raqeto_emails", "raqeto_email_draft_create", "raqeto_email_draft_update", ...VAULT_READ],
+    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks", "raqeto_overview", "raqeto_interactions", "raqeto_emails", "raqeto_email_draft_create", "raqeto_email_draft_update", ...VAULT_READ, ...HISTORY],
     persona: "Jsi Sales. Staráš se o leady: kdo potřebuje follow-up, kdo se odmlčel, jaký je další krok. Píšeš koncepty oslovení a follow-upů (neodesíláš je – vrátíš text Chief of staffovi).",
   },
   marketing: {
@@ -81,7 +82,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   ops: {
     key: "ops",
-    tools: ["crm_*", "projects_*", "tasks_*", "memory_search", ...RAQETO_READ, ...RAQETO_WRITE, ...VAULT_READ],
+    tools: ["crm_*", "projects_*", "tasks_*", "memory_search", ...RAQETO_READ, ...RAQETO_WRITE, ...VAULT_READ, ...HISTORY],
     persona: "Jsi Ops. Připravuješ nabídky, rozsahy projektů, harmonogramy a úkoly. Když je potřeba, zakládej projekty a úkoly nástroji.",
   },
   social_media: {

@@ -5,6 +5,7 @@ import { all, DATA_DIR, get, run as dbRun } from "./db";
 import { endRun, getRun, startRun, type ApexEvent, type Run } from "./events";
 import { AGENTS, systemPrompt } from "./agents";
 import { isSessionLost, llmTimeoutMs, providerSupportsTools, runLlm, type LlmResult } from "./llm";
+import { semanticSearch, semanticStatus } from "./semantic";
 import { untrusted } from "./tools/registry";
 import { vaultDir, vaultPersona } from "./vault";
 import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
@@ -75,6 +76,60 @@ function contextBlocks(query: string): string[] {
   ].filter(Boolean) as string[];
 }
 
+/* Chief-only context: the live approval queue on every turn (so a stale
+ * memory of a proposal gets corrected) and, when a conversation starts,
+ * where the previous conversations left off plus past messages relevant to
+ * the new one. Resumed sessions already hold their own conversation. */
+const PAST_BLOCK_MAX = 3500;
+const clip = (s: string, n: number) => {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
+
+export function pendingBlock(): string {
+  const rows = all<{ id: number; kind: string; summary: string }>(
+    "SELECT id, kind, summary FROM actions WHERE status = 'pending' ORDER BY id DESC LIMIT 10",
+  );
+  const list = rows.length ? rows.map((a) => `- #${a.id} ${a.kind} – ${clip(a.summary, 160)}`).join("\n") : "- nic nečeká";
+  return `Čeká na schválení majitele (stav k tomuto tahu – platí víc než cokoli z dřívějška):\n${list}
+Schvaluje jen majitel tlačítkem v chatu nebo v panelu Deck; ty návrhy nikdy neschvaluješ. Podrobnosti a vyřízené návrhy: actions_list.
+Starší historii rozhovorů zjistíš nástroji conversations_recent, conversation_read a memory_search_conversations – použij je dřív, než řekneš, že něco nevíš nebo si to nepamatuješ.`;
+}
+
+export async function pastBlock(query: string, conversationId: string): Promise<string> {
+  const lines: string[] = [];
+  const prev = all<{ conversation_id: string; last: string }>(
+    `SELECT conversation_id, MAX(created_at) AS last FROM messages WHERE conversation_id != ?
+     GROUP BY conversation_id ORDER BY MAX(id) DESC LIMIT 2`, conversationId,
+  );
+  for (const c of prev) {
+    const tail = all<{ role: string; content: string }>(
+      "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 4", c.conversation_id,
+    ).reverse();
+    lines.push(`Rozhovor ${c.conversation_id} (naposledy ${c.last} UTC):\n${tail.map((m) => `${m.role === "user" ? "Majitel" : "Apex"}: ${clip(m.content, 350)}`).join("\n")}`);
+  }
+  if (semanticStatus().ready) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const hits = await Promise.race([
+        semanticSearch(query, { sources: ["messages"], limit: 6 }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), 4000); }),
+      ]);
+      const own = `${conversationId}:`;
+      const relevant = hits.filter((h) => !h.ref.startsWith(own)).slice(0, 3);
+      if (relevant.length) lines.push(`Související místa z dřívějška:\n${relevant.map((h) => `[${h.ref.slice(0, h.ref.lastIndexOf(":"))}] ${clip(h.text, 400)}`).join("\n")}`);
+    } catch { /* semantic index unavailable - the recent conversations still help */ } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (!lines.length) return "";
+  const head = "Z minulých rozhovorů (nová konverzace – takhle skončily ty předchozí; více přes conversation_read):\n";
+  let body = lines.join("\n\n");
+  const budget = PAST_BLOCK_MAX - head.length - 60;
+  if (body.length > budget) body = `${body.slice(0, budget)}…`;
+  return head + untrusted("minule-rozhovory", body);
+}
+
 /* Per-turn refresh for a resumed codex thread: time and memory relevant to the
  * new message (persona, rules and guide are already in the thread). */
 function turnUpdate(query: string): string {
@@ -122,6 +177,7 @@ export async function runTurn(opts: {
 }): Promise<void> {
   const conversationId = opts.conversationId || randomUUID();
   const last = opts.messages[opts.messages.length - 1];
+  const fresh = !get("SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1", conversationId);
   dbRun("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)", conversationId, "user", last.content);
 
   const tools = providerSupportsTools(opts.provider);
@@ -131,16 +187,18 @@ export async function runTurn(opts: {
   const run = startRun({ agent: "chief_of_staff", depth: 0, provider: opts.provider, source: "chat", emit: opts.emit, signal: ctl.signal });
   opts.emit({ t: "state", v: "thinking" });
   try {
-    const system = systemPrompt("chief_of_staff", contextBlocks(last.content));
     const cwd = SESSION_PROVIDERS.has(opts.provider) ? sessionCwd(conversationId) : undefined;
     const stored = cwd ? get<ConversationRow>("SELECT * FROM conversations WHERE id = ?", conversationId) : undefined;
     const resumable = stored?.provider === opts.provider && stored.session_id ? stored : undefined;
+    const pending = pendingBlock();
+    const past = fresh && !resumable ? await pastBlock(last.content, conversationId) : "";
+    const system = systemPrompt("chief_of_staff", [...contextBlocks(last.content), pending, past]);
     const call = (resume: ConversationRow | undefined) => runLlm({
       provider: opts.provider,
       agent: "chief_of_staff",
       // codex has no system-prompt flag, so its prompt carries the system text inline;
       // a resumed thread already holds persona + rules - send only what changes per turn
-      system: resume && opts.provider === "codex" ? turnUpdate(last.content) : system,
+      system: resume && opts.provider === "codex" ? `${turnUpdate(last.content)}\n\n${pending}` : system,
       prompt: resume ? last.content : transcript(opts.messages),
       run: tools ? run : undefined,
       onToken: (v) => opts.emit({ t: "token", v }),
