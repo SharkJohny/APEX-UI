@@ -19,9 +19,20 @@ export type ApexStatus = {
     ready: boolean; model?: string; indexing?: boolean; error?: string; lastIndexedAt?: string;
     indexed?: { vault: number; memory: number; messages: number };
   };
-  raqeto?: { configured: boolean; base?: string; ok?: boolean; error?: string };
+  raqeto?: { configured: boolean; base?: string; ok?: boolean; workspace?: { id: string; name: string; slug: string | null }; scopes?: string[]; error?: string };
+  raqetoQueue?: RaqetoQueueStatus;
   tts?: string;
   pendingActions?: number;
+};
+
+export type RaqetoQueueRun = {
+  taskId: string; title: string; agent: string; status: "running" | "review" | "failed" | "skipped";
+  at: string; finishedAt?: string; jobId?: number | null; result?: string; error?: string;
+};
+export type RaqetoQueueStatus = {
+  enabled: boolean; lastPollAt?: string; queued: number; error?: string;
+  processing?: { taskId: string; title: string; agent: string; startedAt: string };
+  recent: RaqetoQueueRun[];
 };
 
 const POLL_MS = 15_000;

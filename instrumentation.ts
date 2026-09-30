@@ -14,6 +14,8 @@ export async function register() {
       startScheduler();
       const { startSemanticIndexer } = await import("./server/semantic");
       startSemanticIndexer();
+      const { startRaqetoQueue } = await import("./server/raqetoQueue");
+      startRaqetoQueue();
     } catch (e) {
       console.error("[apex] scheduler start failed:", e);
     }

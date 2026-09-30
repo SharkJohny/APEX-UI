@@ -30,6 +30,10 @@ export type Run = {
    * change loops - that is how injected content could exfiltrate data or
    * persist itself. Propagates to the parent run. */
   tainted?: boolean;
+  /* Direct Raqeto writes made by this run and its nested runs (budget for
+   * tainted runs) and their "tool id" trail (appended to AI queue results). */
+  writes?: number;
+  trail?: string[];
   emit: (ev: ApexEvent) => void;
   signal: AbortSignal;
 };

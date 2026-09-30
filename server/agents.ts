@@ -16,8 +16,20 @@ export type AgentDef = {
   persona: string;
 };
 
+// Read and write Raqeto tools share prefixes (raqeto_calendar vs raqeto_calendar_create), so list them explicitly.
+const RAQETO_READ = [
+  "raqeto_status", "raqeto_search", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks",
+  "raqeto_task_detail", "raqeto_task_statuses", "raqeto_briefs", "raqeto_time_entries", "raqeto_invoices", "raqeto_quotes",
+  "raqeto_calendar", "raqeto_schedule", "raqeto_emails", "raqeto_interactions", "raqeto_overview",
+];
+const RAQETO_WRITE = [
+  "raqeto_task_create", "raqeto_task_update", "raqeto_task_move", "raqeto_task_set_priority", "raqeto_schedule_add",
+  "raqeto_schedule_reorder", "raqeto_time_log", "raqeto_timer_start", "raqeto_timer_stop", "raqeto_calendar_create",
+  "raqeto_calendar_update", "raqeto_email_draft_create", "raqeto_email_draft_update", "raqeto_brief_upsert",
+  "raqeto_interaction_mark_replied", "raqeto_comment_internal",
+];
 const VAULT_READ = ["vault_search", "vault_read", "vault_index", "vault_log", "vault_list", "vault_links"];
-const READ_DATA = ["memory_*", "crm_*", "tasks_*", "projects_*", "finance_*", "analytics_*", "raqeto_*", "jobs_recent", ...VAULT_READ];
+const READ_DATA = ["memory_*", "crm_*", "tasks_*", "projects_*", "finance_*", "analytics_*", ...RAQETO_READ, "jobs_recent", ...VAULT_READ];
 
 export const SPECIALISTS: AgentKey[] = [
   "strategist", "researcher", "finance", "editor", "sales", "marketing",
@@ -27,7 +39,7 @@ export const SPECIALISTS: AgentKey[] = [
 export const AGENTS: Partial<Record<AgentKey, AgentDef>> = {
   chief_of_staff: {
     key: "chief_of_staff",
-    tools: [...READ_DATA, "gmail_*", "calendar_*", "drive_*", "propose_*", "delegate_to_*", "loops_*"],
+    tools: [...READ_DATA, ...RAQETO_WRITE, "gmail_*", "calendar_*", "drive_*", "propose_*", "delegate_to_*", "loops_*"],
     persona: `Jsi Chief of staff – pravá ruka majitele firmy a jediný hlas Apexu, se kterým uživatel mluví.
 Řídíš tým specialistů. Jednoduché věci vyřeš sám (i pomocí nástrojů), odbornou práci deleguj nástrojem delegate_to_<specialista> se zadáním, které obsahuje veškerý potřebný kontext – specialista nevidí konverzaci.
 Než odpovíš na cokoli o klientech, projektech, penězích nebo minulosti, podívej se do dat (memory_search, crm_*, tasks_*…). Nic si nevymýšlej: čísla a fakta ber jen z nástrojů.
@@ -48,7 +60,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   finance: {
     key: "finance",
-    tools: ["finance_*", "crm_*", "analytics_*", "memory_search", "raqeto_time_entries", "raqeto_invoices", "raqeto_projects", "raqeto_overview", "raqeto_clients", "vault_search", "vault_read"],
+    tools: ["finance_*", "crm_*", "analytics_*", "memory_search", "raqeto_time_entries", "raqeto_invoices", "raqeto_quotes", "raqeto_projects", "raqeto_overview", "raqeto_clients", "raqeto_client_detail", "raqeto_time_log", "raqeto_timer_start", "raqeto_timer_stop", "vault_search", "vault_read"],
     persona: "Jsi Finance. Hlídáš tržby, pipeline a ceny. Počítej jen z dat z nástrojů, ukaž výpočet a upozorni na rizika.",
   },
   editor: {
@@ -58,7 +70,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   sales: {
     key: "sales",
-    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_projects", "raqeto_tasks", "raqeto_overview", ...VAULT_READ],
+    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks", "raqeto_overview", "raqeto_interactions", "raqeto_emails", "raqeto_email_draft_create", "raqeto_email_draft_update", ...VAULT_READ],
     persona: "Jsi Sales. Staráš se o leady: kdo potřebuje follow-up, kdo se odmlčel, jaký je další krok. Píšeš koncepty oslovení a follow-upů (neodesíláš je – vrátíš text Chief of staffovi).",
   },
   marketing: {
@@ -69,7 +81,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   ops: {
     key: "ops",
-    tools: ["crm_*", "projects_*", "tasks_*", "memory_search", "raqeto_*", ...VAULT_READ],
+    tools: ["crm_*", "projects_*", "tasks_*", "memory_search", ...RAQETO_READ, ...RAQETO_WRITE, ...VAULT_READ],
     persona: "Jsi Ops. Připravuješ nabídky, rozsahy projektů, harmonogramy a úkoly. Když je potřeba, zakládej projekty a úkoly nástroji.",
   },
   social_media: {
@@ -95,7 +107,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   analytics: {
     key: "analytics",
-    tools: ["analytics_*", "finance_*", "crm_*", "tasks_*", "raqeto_*"],
+    tools: ["analytics_*", "finance_*", "crm_*", "tasks_*", ...RAQETO_READ],
     persona: "Jsi Analytics. Počítáš metriky (konverze leadů, tržby, plnění úkolů) z dat v nástrojích a vysvětlíš, co znamenají.",
   },
 };

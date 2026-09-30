@@ -386,18 +386,39 @@ function LocalCrm({ reloadKey }: { reloadKey: string }) {
   );
 }
 
-type RqProject = { id: string; name?: string; client_name?: string; status?: string; deadline?: string | null; days_left?: number | null; budget_usage_pct?: number | null; tracked_hours?: number | null; budget_hours?: number | null };
-type RqTask = { id: string; name?: string; project_name?: string; priority?: string; deadline?: string | null; status?: string; overdue?: boolean };
-type RqClient = { id: string; name?: string; company?: string; email?: string; phone?: string; is_active?: boolean };
-type RqOverview = { configured?: boolean; ok?: boolean; base?: string; error?: string; projects?: RqProject[]; tasks?: RqTask[]; counts?: Record<string, number> };
+type RqProject = { id: string; name?: string; client_name?: string; status?: string; status_label?: string; deadline?: string | null; days_left?: number | null; budget_usage_pct?: number | null; tracked_hours?: number | null; budget_hours?: number | null };
+type RqTask = {
+  id: string; title?: string; name?: string; project_name?: string; client_name?: string; priority?: string; priority_label?: string;
+  deadline?: string | null; status?: string; status_label?: string; overdue?: boolean; ai_state?: string; description?: string;
+};
+type RqClient = { id: string; name?: string; company?: string; email?: string; phone?: string; ico?: string; is_active?: boolean };
+type RqInvoice = { id: string; number?: string; client_name?: string; project_name?: string; status?: string; status_label?: string; due_date?: string | null; issued_date?: string | null; total?: number; currency?: string; remaining?: number; remaining_czk?: number; overdue?: boolean };
+type RqInteraction = { id: string; client_name?: string; project_name?: string; channel?: string; direction?: string; occurred_at?: string; from_display?: string; subject?: string; excerpt?: string; needs_reply?: boolean; replied_at?: string | null };
+type RqSchedule = { id: string; task_title?: string; project_name?: string; completed?: boolean };
+type RqTimer = { task_title?: string; description?: string; project_name?: string; started_at?: string; hours?: number };
+type RqOverview = {
+  configured?: boolean; ok?: boolean; base?: string; error?: string; errors?: string[]; workspace?: { name?: string } | null;
+  counts?: Record<string, number>; projects?: RqProject[]; tasks?: RqTask[]; overdue_tasks?: RqTask[]; due_today?: RqTask[];
+  schedule_today?: RqSchedule[]; running_timer?: RqTimer | null; running_timers?: number;
+  invoices?: { unpaid_czk?: number; overdue_czk?: number; unpaid_count?: number; overdue_count?: number } | null; overdue_invoices?: RqInvoice[];
+};
 
+/* The only Raqeto web URL the API guide documents; deeper links are not specified. */
+const RAQETO_WEB = "https://www.raqeto.com/dashboard/";
 const fmtDate = (d?: string | null) => {
   if (!d) return "";
   const t = new Date(d.slice(0, 10) + "T00:00:00");
   return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric", year: "numeric" });
 };
+const czk = (v?: number | null, cur = "CZK") => (typeof v !== "number" ? "" : `${Math.round(v).toLocaleString("cs-CZ")} ${cur === "CZK" ? "Kč" : cur}`);
 const daysLeft = (n?: number | null) => (typeof n !== "number" ? "" : n < 0 ? `${-n} d po termínu` : n === 0 ? "dnes" : `za ${n} d`);
-const COUNT_LABEL: Record<string, string> = { active_projects: "Aktivní projekty", open_tasks: "Otevřené úkoly", overdue_tasks: "Po termínu", over_budget: "Přes rozpočet" };
+const taskTitle = (t: RqTask) => t.title || t.name || "(bez názvu)";
+const isUnpaid = (i: RqInvoice) => (i.remaining ?? 0) > 0;
+const COUNT_LABEL: Record<string, string> = {
+  open_tasks: "Otevřené úkoly", overdue_tasks: "Po termínu", due_today: "Termín dnes", due_this_week: "Termín tento týden", scheduled_today: "V plánu dnes",
+  needs_reply: "Čeká na odpověď", unpaid_invoices: "Nezaplacené faktury", overdue_invoices: "Faktury po splatnosti", active_projects: "Aktivní projekty", over_budget: "Přes rozpočet",
+};
+const HOT_COUNTS = new Set(["overdue_tasks", "over_budget", "overdue_invoices", "needs_reply"]);
 
 function RaqetoHint({ reason }: { reason?: string }) {
   return (
@@ -412,86 +433,364 @@ function RaqetoHint({ reason }: { reason?: string }) {
   );
 }
 
-function RaqetoClients({ reloadKey }: { reloadKey: string }) {
-  const { data, error, loading } = useDeckData<{ clients?: RqClient[]; error?: string }>("/api/raqeto?section=clients", reloadKey);
+function TaskMeta({ t }: { t: RqTask }) {
+  return (
+    <div className="deck-meta">
+      {[t.project_name, t.client_name, t.priority_label || t.priority, t.deadline ? `${t.overdue ? "po termínu " : "termín "}${fmtDate(t.deadline)}` : "", t.status_label || t.status, t.ai_state && t.ai_state !== "none" ? `AI: ${t.ai_state}` : ""]
+        .filter(Boolean).join(" · ")}
+    </div>
+  );
+}
+
+/* ── Dnes ── */
+
+function TodayBlock({ ov }: { ov: RqOverview }) {
+  const overdue = ov.overdue_tasks ?? [];
+  const dueToday = (ov.due_today ?? []).filter((t) => !overdue.some((o) => o.id === t.id));
+  const schedule = ov.schedule_today ?? [];
+  const timer = ov.running_timer ?? null;
+  const reply = ov.counts?.needs_reply ?? 0;
+  const inv = ov.invoices;
+  const empty = !overdue.length && !dueToday.length && !schedule.length && !timer && !reply && !inv?.unpaid_count;
+  return (
+    <section className="deck-card deck-stack">
+      <h3 className="deck-h">Dnes</h3>
+      {empty && <p className="deck-note">Na dnešek nic nehoří.</p>}
+      {timer && (
+        <p className="deck-note deck-warn">
+          Běží časovač: {timer.task_title || timer.description || "bez popisu"}{timer.project_name ? ` · ${timer.project_name}` : ""}
+          {timer.started_at ? ` · od ${fmtTime(timer.started_at)}` : ""}{(ov.running_timers ?? 0) > 1 ? ` (+${(ov.running_timers ?? 1) - 1} další)` : ""}
+        </p>
+      )}
+      {(overdue.length > 0 || dueToday.length > 0) && (
+        <div>
+          <div className="deck-label">Po termínu ({overdue.length}) · termín dnes ({dueToday.length})</div>
+          <ul className="deck-list deck-compact">
+            {[...overdue, ...dueToday].slice(0, 8).map((t) => (
+              <li key={t.id} className="deck-row">
+                <span className={`deck-dot ${t.overdue ? "deck-dot-failed" : "deck-dot-running"}`} aria-hidden="true" />
+                <span className="deck-grow deck-ellipsis deck-text">{taskTitle(t)}</span>
+                <span className="deck-meta deck-none">{t.overdue && t.deadline ? fmtDate(t.deadline) : t.project_name}</span>
+              </li>
+            ))}
+          </ul>
+          {overdue.length + dueToday.length > 8 && <p className="deck-meta">…a další v záložce Úkoly.</p>}
+        </div>
+      )}
+      {schedule.length > 0 && (
+        <div>
+          <div className="deck-label">Plán na dnes ({schedule.filter((s) => s.completed).length}/{schedule.length} hotovo)</div>
+          <ul className="deck-list deck-compact">
+            {schedule.slice(0, 10).map((s) => (
+              <li key={s.id} className="deck-row">
+                <span className={`deck-dot${s.completed ? " deck-dot-done" : ""}`} aria-hidden="true" />
+                <span className="deck-grow deck-ellipsis deck-text" style={s.completed ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>{s.task_title}</span>
+                <span className="deck-meta deck-none">{s.project_name}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {reply > 0 && <p className="deck-note deck-warn">Čeká na odpověď: {reply} {reply === 1 ? "zpráva" : reply < 5 ? "zprávy" : "zpráv"} (záložka Komunikace).</p>}
+      {!!inv?.unpaid_count && (
+        <p className="deck-note">
+          Nezaplacené faktury: {inv.unpaid_count} · {czk(inv.unpaid_czk)}
+          {!!inv.overdue_count && <span className="deck-err"> · po splatnosti {inv.overdue_count} ({czk(inv.overdue_czk)})</span>}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/* ── Úkoly ── */
+
+/* The API route has no per-task detail, so the expanded row shows the list record. */
+function TaskDetail({ t }: { t: RqTask }) {
+  return (
+    <div className="deck-stack deck-pad">
+      {t.description ? <p className="deck-text">{htmlText(t.description)}</p> : <p className="deck-meta">Bez popisu.</p>}
+    </div>
+  );
+}
+
+function RqTasks({ reloadKey }: { reloadKey: string }) {
+  const { data, error, loading } = useDeckData<{ tasks?: RqTask[] }>("/api/raqeto?section=tasks", reloadKey);
+  const [project, setProject] = useState("");
+  const [status, setStatus] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const all = asList<RqTask>(data, "tasks");
+  const projects = useMemo(() => [...new Set(all.map((t) => t.project_name || ""))].filter(Boolean).sort((a, b) => a.localeCompare(b, "cs")), [all]);
+  const statuses = useMemo(() => [...new Map(all.map((t) => [t.status ?? "", t.status_label || t.status || ""])).entries()].filter(([k]) => k), [all]);
+  const tasks = useMemo(() => all
+    .filter((t) => (!project || t.project_name === project) && (!status || t.status === status))
+    .sort((x, y) => Number(!!y.overdue) - Number(!!x.overdue) || (x.deadline ?? "9999").localeCompare(y.deadline ?? "9999")), [all, project, status]);
+  return (
+    <div className="deck-stack">
+      <div className="deck-row deck-wrap">
+        <label className="visually-hidden" htmlFor="rq-task-project">Projekt</label>
+        <select id="rq-task-project" className="deck-input deck-select-sm" value={project} onChange={(e) => setProject(e.target.value)}>
+          <option value="">Všechny projekty</option>
+          {projects.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <label className="visually-hidden" htmlFor="rq-task-status">Stav</label>
+        <select id="rq-task-status" className="deck-input deck-select-sm" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">Všechny stavy</option>
+          {statuses.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <span className="deck-meta">{tasks.length} úkolů</span>
+      </div>
+      <State loading={loading} error={error} empty={!tasks.length} emptyText="Žádné otevřené úkoly." />
+      <ul className="deck-list deck-compact">
+        {tasks.map((t) => {
+          const expanded = open === t.id;
+          return (
+            <li key={t.id} className={`deck-card${t.overdue ? " deck-card-hot" : ""}`}>
+              <button type="button" className="deck-rowbtn" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : t.id)}>
+                <span className="deck-grow deck-min" style={{ textAlign: "left" }}>
+                  <span className="deck-title" style={{ display: "block" }}>{taskTitle(t)}</span>
+                  <TaskMeta t={t} />
+                </span>
+              </button>
+              {expanded && <TaskDetail t={t} />}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/* ── Projekty ── */
+
+function RqProjects({ reloadKey }: { reloadKey: string }) {
+  const { data, error, loading } = useDeckData<{ projects?: RqProject[] }>("/api/raqeto?section=projects", reloadKey);
+  const projects = useMemo(() => asList<RqProject>(data, "projects").slice().sort((x, y) => (y.budget_usage_pct ?? -1) - (x.budget_usage_pct ?? -1)), [data]);
+  return (
+    <div className="deck-stack">
+      <State loading={loading} error={error} empty={!projects.length} emptyText="Žádné aktivní projekty." />
+      <ul className="deck-list deck-compact">
+        {projects.map((p) => {
+          const pct = typeof p.budget_usage_pct === "number" ? p.budget_usage_pct : null;
+          const hours = typeof p.tracked_hours === "number" ? p.tracked_hours : null;
+          const budget = p.budget_hours;
+          return (
+            <li key={p.id} className="deck-card deck-row deck-wrap">
+              <div className="deck-grow deck-min">
+                <div className="deck-title">{p.name}</div>
+                <div className="deck-meta">
+                  {[p.client_name, hours !== null ? `${hours.toLocaleString("cs-CZ")}${budget ? ` / ${budget.toLocaleString("cs-CZ")}` : ""} h` : "",
+                    p.deadline ? `termín ${fmtDate(p.deadline)}${p.days_left != null ? ` (${daysLeft(p.days_left)})` : ""}` : ""].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              {pct !== null && (
+                <span className={`deck-pill ${pct > 100 ? "deck-pill-failed" : pct >= 80 ? "deck-pill-pending" : "deck-pill-executed"}`} title="Čerpání rozpočtu">{Math.round(pct)} %</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/* ── Klienti ── */
+
+/* Search runs in Raqeto (all clients); without a query the first page is shown. */
+function RqClients({ reloadKey }: { reloadKey: string }) {
+  const [q, setQ] = useState("");
+  const [needle, setNeedle] = useState("");
+  useEffect(() => { const t = setTimeout(() => setNeedle(q.trim()), 350); return () => clearTimeout(t); }, [q]);
+  const { data, error, loading } = useDeckData<{ clients?: RqClient[] }>(`/api/raqeto?section=clients${needle ? `&search=${encodeURIComponent(needle)}` : ""}`, reloadKey);
   const clients = asList<RqClient>(data, "clients");
   return (
-    <>
-      <h3 className="deck-h">Klienti ({clients.length})</h3>
-      <State loading={loading} error={error} empty={!clients.length} emptyText="Žádní aktivní klienti." />
+    <div className="deck-stack">
+      <label className="visually-hidden" htmlFor="rq-client-q">Hledat klienta</label>
+      <input id="rq-client-q" className="deck-input" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Hledat klienta (jméno, firma, e-mail, IČO)" />
+      <State loading={loading} error={error} empty={!clients.length} emptyText={needle ? "Nic nenalezeno." : "Žádní klienti."} />
       <ul className="deck-list deck-compact">
         {clients.map((c) => (
           <li key={c.id} className="deck-card">
             <div className="deck-title">{c.name}{c.company && c.company !== c.name ? ` – ${c.company}` : ""}</div>
-            {(c.email || c.phone) && <div className="deck-meta">{[c.email, c.phone].filter(Boolean).join(" · ")}</div>}
+            {(c.email || c.phone || c.ico) && <div className="deck-meta">{[c.email, c.phone, c.ico ? `IČO ${c.ico}` : ""].filter(Boolean).join(" · ")}</div>}
           </li>
         ))}
       </ul>
-    </>
+      {!needle && clients.length >= 50 && <p className="deck-meta">Zobrazeno prvních {clients.length} – pro ostatní použij hledání.</p>}
+    </div>
   );
 }
 
-function CrmTab({ reloadKey }: { reloadKey: string }) {
+/* ── Faktury ── */
+
+function RqInvoices({ reloadKey }: { reloadKey: string }) {
+  const { data, error, loading } = useDeckData<{ invoices?: RqInvoice[] }>("/api/raqeto?section=invoices", reloadKey);
+  const invoices = useMemo(() => asList<RqInvoice>(data, "invoices").slice().sort((x, y) =>
+    Number(!!y.overdue) - Number(!!x.overdue) || Number(isUnpaid(y)) - Number(isUnpaid(x)) || (y.issued_date ?? "").localeCompare(x.issued_date ?? "")), [data]);
+  const unpaid = invoices.filter(isUnpaid);
+  return (
+    <div className="deck-stack">
+      {unpaid.length > 0 && <p className="deck-note">Nezaplaceno v posledních {invoices.length} fakturách: {unpaid.length} · {czk(unpaid.reduce((s, i) => s + (i.remaining_czk ?? 0), 0))}</p>}
+      <State loading={loading} error={error} empty={!invoices.length} emptyText="Žádné faktury." />
+      <ul className="deck-list deck-compact">
+        {invoices.slice(0, 100).map((i) => {
+          const od = !!i.overdue;
+          return (
+            <li key={i.id} className={`deck-card deck-row deck-wrap${od ? " deck-card-hot" : ""}`}>
+              <div className="deck-grow deck-min">
+                <div className="deck-title">{i.number || "(koncept)"} · {i.client_name}</div>
+                <div className="deck-meta">{[i.project_name, i.issued_date ? `vystaveno ${fmtDate(i.issued_date)}` : "", i.due_date ? `splatnost ${fmtDate(i.due_date)}` : ""].filter(Boolean).join(" · ")}</div>
+              </div>
+              <span className="deck-meta deck-none">{czk(i.total, i.currency || "CZK")}</span>
+              <span className={`deck-pill ${od ? "deck-pill-failed" : isUnpaid(i) ? "deck-pill-pending" : "deck-pill-executed"}`}>{od ? "po splatnosti" : i.status_label || i.status}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/* ── Komunikace ── */
+
+function RqInteractions({ reloadKey }: { reloadKey: string }) {
+  const { data, error, loading } = useDeckData<{ items?: RqInteraction[]; count?: number }>("/api/raqeto?section=interactions", reloadKey);
+  const items = useMemo(() => asList<RqInteraction>(data, "items", "interactions").slice().sort((x, y) =>
+    Number(!!y.needs_reply && !y.replied_at) - Number(!!x.needs_reply && !x.replied_at) || (y.occurred_at ?? "").localeCompare(x.occurred_at ?? "")), [data]);
+  return (
+    <div className="deck-stack">
+      <p className="deck-note">Zprávy klientů, které čekají na tvoji odpověď{typeof data?.count === "number" ? ` (${data.count})` : ""}.</p>
+      <State loading={loading} error={error} empty={!items.length} emptyText="Nic nečeká na odpověď." />
+      <ul className="deck-list deck-compact">
+        {items.slice(0, 60).map((i) => {
+          const waiting = !!i.needs_reply && !i.replied_at;
+          return (
+            <li key={i.id} className={`deck-card${waiting ? " deck-card-hot" : ""}`}>
+              <div className="deck-row deck-wrap">
+                <span className="deck-title deck-grow deck-min">{i.subject || i.excerpt?.slice(0, 80) || "(bez předmětu)"}</span>
+                {waiting && <span className="deck-pill deck-pill-pending">čeká na odpověď</span>}
+              </div>
+              <div className="deck-meta">{[i.client_name || i.from_display, i.project_name, i.channel, fmtTime(i.occurred_at)].filter(Boolean).join(" · ")}</div>
+              {i.excerpt && i.subject && <p className="deck-text deck-ellipsis">{i.excerpt}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/* ── AI fronta ── */
+
+const RUN_STATUS: Record<string, { label: string; pill: string }> = {
+  running: { label: "pracuje", pill: "deck-pill-pending" }, review: { label: "ke kontrole", pill: "deck-pill-executed" },
+  failed: { label: "selhalo", pill: "deck-pill-failed" }, skipped: { label: "přeskočeno", pill: "" },
+};
+
+function AiQueue({ status, onChanged }: { status: ApexStatus | null; onChanged: () => void }) {
+  const q = status?.raqetoQueue;
+  const { busy, error, run } = useOp();
+  if (!q) return <p className="deck-note">Stav fronty se načítá…</p>;
+  return (
+    <div className="deck-stack">
+      <section className="deck-card deck-stack">
+        <div className="deck-row deck-wrap">
+          <h3 className="deck-h deck-grow">Fronta pro AI (AI Command Center)</h3>
+          <span className={`deck-pill ${q.enabled ? "deck-pill-executed" : "deck-pill-pending"}`}>{q.enabled ? "zapnuto" : "vypnuto"}</span>
+        </div>
+        <p className="deck-note">
+          Apex každou minutu převezme úkol, který jsi v Raqeto předal AI, zpracuje ho agentem a vrátí výsledek ke kontrole (nikdy ho sám neuzavře).
+          {!q.enabled && " Zapneš ji tokenem RAQETO_API_TOKEN a bez RAQETO_AI_QUEUE=0."}
+        </p>
+        <p className="deck-meta">{q.lastPollAt ? `poslední kontrola ${fmtTime(q.lastPollAt)} · ve frontě ${q.queued}` : "Fronta se zatím nekontrolovala (spouští se se serverem)."}</p>
+        {q.processing && (
+          <p className="deck-note deck-warn">Právě zpracovává {agentName(q.processing.agent)}: „{q.processing.title}“ (od {fmtTime(q.processing.startedAt)})</p>
+        )}
+        {q.error && <p className="deck-note deck-err">{q.error}</p>}
+        <div className="deck-row deck-actions">
+          <button type="button" className="deck-btn deck-btn-gold" disabled={!q.enabled || !!q.processing || !!busy}
+            onClick={() => void run("run", () => apiJson("/api/raqeto/queue", { method: "POST", body: JSON.stringify({ op: "run" }) }), onChanged)}>
+            {busy === "run" ? "Spouštím…" : "Zpracovat frontu teď"}
+          </button>
+        </div>
+        {error && <p className="deck-note deck-err" role="alert">{error}</p>}
+      </section>
+      <h3 className="deck-h">Poslední běhy</h3>
+      {!q.recent.length && <p className="deck-note">Zatím žádné zpracované úkoly.</p>}
+      <ul className="deck-list deck-compact">
+        {q.recent.map((r) => (
+          <li key={`${r.taskId}-${r.at}`} className="deck-card deck-stack">
+            <div className="deck-row deck-wrap">
+              <span className="deck-title deck-grow deck-min">{r.title}</span>
+              <span className={`deck-pill ${RUN_STATUS[r.status]?.pill ?? ""}`}>{RUN_STATUS[r.status]?.label ?? r.status}</span>
+            </div>
+            <div className="deck-meta">{[agentName(r.agent), fmtTime(r.at), r.jobId ? `úloha #${r.jobId}` : ""].filter(Boolean).join(" · ")}</div>
+            {(r.result || r.error) && <p className={`deck-text${r.error ? " deck-err" : ""}`}>{(r.error || r.result || "").slice(0, 300)}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/* ── CRM tab ── */
+
+type CrmView = "today" | "tasks" | "projects" | "clients" | "invoices" | "interactions" | "queue";
+const CRM_VIEWS: { id: CrmView; label: string }[] = [
+  { id: "today", label: "Přehled" }, { id: "tasks", label: "Úkoly" }, { id: "projects", label: "Projekty" }, { id: "clients", label: "Klienti" },
+  { id: "invoices", label: "Faktury" }, { id: "interactions", label: "Komunikace" }, { id: "queue", label: "AI fronta" },
+];
+
+function CrmTab({ reloadKey, status, onChanged }: { reloadKey: string; status: ApexStatus | null; onChanged: () => void }) {
   const { data, error, loading } = useDeckData<RqOverview>("/api/raqeto?section=overview", reloadKey);
+  const [view, setView] = useState<CrmView>("today");
   const [localOpen, setLocalOpen] = useState(false);
   const configured = data?.configured === true;
-  const projects = data?.projects ?? [];
-  const tasks = useMemo(() => (data?.tasks ?? []).slice().sort((x, y) =>
-    Number(!!y.overdue) - Number(!!x.overdue) || (x.deadline ?? "9999").localeCompare(y.deadline ?? "9999")), [data]);
+  const workspace = data?.workspace?.name || status?.raqeto?.workspace?.name;
+  const queued = status?.raqetoQueue?.lastPollAt ? status.raqetoQueue.queued : 0;
   return (
     <div className="deck-stack">
       {loading && !data && !error && <p className="deck-note">Načítám…</p>}
       {(error || (data && !configured)) && <RaqetoHint reason={error && !/není k dispozici/.test(error) ? error : undefined} />}
       {configured && (
         <>
-          <p className="deck-note">Zdroj pravdy: Raqeto CRM · jen pro čtení (změny navrhuje Apex ke schválení).</p>
-          {data?.error && <p className="deck-note deck-err" role="alert">{data.error}</p>}
-          {data?.counts && (
-            <div className="deck-kpis">
-              {Object.entries(data.counts).map(([k, v]) => (
-                <div key={k} className="deck-kpi">
-                  <div className="deck-label">{COUNT_LABEL[k] ?? k}</div>
-                  <div className={`deck-title${(k === "overdue_tasks" || k === "over_budget") && v > 0 ? " deck-warn" : ""}`}>{v}</div>
-                </div>
-              ))}
+          <div className="deck-row deck-wrap">
+            <div className="deck-grow deck-min">
+              <div className="deck-title">Raqeto CRM{workspace ? ` · ${workspace}` : ""}</div>
+              <div className="deck-meta">Jen pro čtení – změny dělá Apex nástroji nebo po tvém schválení.</div>
             </div>
-          )}
-
-          <h3 className="deck-h">Aktivní projekty ({projects.length})</h3>
-          {!projects.length && !data?.error && <p className="deck-note">Žádné aktivní projekty.</p>}
-          <ul className="deck-list deck-compact">
-            {projects.map((p) => {
-              const pct = typeof p.budget_usage_pct === "number" ? p.budget_usage_pct : null;
-              return (
-                <li key={p.id} className="deck-card deck-row deck-wrap">
-                  <div className="deck-grow deck-min">
-                    <div className="deck-title">{p.name}</div>
-                    <div className="deck-meta">{[p.client_name, p.deadline ? `termín ${fmtDate(p.deadline)}${p.days_left != null ? ` (${daysLeft(p.days_left)})` : ""}` : "bez termínu"].filter(Boolean).join(" · ")}</div>
-                  </div>
-                  {pct !== null && (
-                    <span className={`deck-pill ${pct > 100 ? "deck-pill-failed" : pct >= 80 ? "deck-pill-pending" : "deck-pill-executed"}`} title="Čerpání rozpočtu">
-                      {Math.round(pct)} %
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-
-          <h3 className="deck-h">Otevřené úkoly ({tasks.length})</h3>
-          {!tasks.length && !data?.error && <p className="deck-note">Žádné otevřené úkoly.</p>}
-          <ul className="deck-list deck-compact">
-            {tasks.map((t) => (
-              <li key={t.id} className={`deck-card${t.overdue ? " deck-card-hot" : ""}`}>
-                <div className="deck-title">{t.name}</div>
-                <div className="deck-meta">
-                  {[t.project_name, t.priority, t.deadline ? `${t.overdue ? "po termínu " : "termín "}${fmtDate(t.deadline)}` : "", t.status].filter(Boolean).join(" · ")}
-                </div>
-              </li>
+            <a className="deck-btn deck-btn-sm" href={RAQETO_WEB} target="_blank" rel="noopener noreferrer">Otevřít Raqeto</a>
+          </div>
+          {data?.error && <p className="deck-note deck-err" role="alert">{data.error}</p>}
+          {!!data?.errors?.length && <p className="deck-note deck-warn">Část dat se nenačetla: {data.errors.join("; ")}</p>}
+          <div className="deck-row deck-wrap" role="tablist" aria-label="Sekce CRM">
+            {CRM_VIEWS.map((v) => (
+              <button key={v.id} type="button" role="tab" className="deck-tab" aria-selected={view === v.id} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>
+                {v.label}
+                {v.id === "queue" && queued ? <span className="deck-badge" aria-label={`${queued} ve frontě`}>{queued}</span> : null}
+              </button>
             ))}
-          </ul>
-
-          <RaqetoClients reloadKey={reloadKey} />
+          </div>
+          {view === "today" && data && (
+            <>
+              {data.counts && (
+                <div className="deck-kpis">
+                  {Object.entries(data.counts).map(([k, v]) => (
+                    <div key={k} className="deck-kpi">
+                      <div className="deck-label">{COUNT_LABEL[k] ?? k.replace(/_/g, " ")}</div>
+                      <div className={`deck-title${HOT_COUNTS.has(k) && v > 0 ? " deck-warn" : ""}`}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <TodayBlock ov={data} />
+            </>
+          )}
+          {view === "tasks" && <RqTasks reloadKey={reloadKey} />}
+          {view === "projects" && <RqProjects reloadKey={reloadKey} />}
+          {view === "clients" && <RqClients reloadKey={reloadKey} />}
+          {view === "invoices" && <RqInvoices reloadKey={reloadKey} />}
+          {view === "interactions" && <RqInteractions reloadKey={reloadKey} />}
+          {view === "queue" && <AiQueue status={status} onChanged={onChanged} />}
         </>
       )}
 
@@ -840,7 +1139,16 @@ function IntegrationsTab({ status, notice, onChanged }: { status: ApexStatus | n
             {!status?.raqeto?.configured ? "nenastaveno" : status.raqeto.ok === false ? "chyba" : status.raqeto.ok ? "připojeno" : "nastaveno"}
           </span>
         </div>
+        {status?.raqeto?.workspace?.name && <p className="deck-meta">Workspace: {status.raqeto.workspace.name}</p>}
         {status?.raqeto?.base && <p className="deck-meta deck-mono">{status.raqeto.base}</p>}
+        {!!status?.raqeto?.scopes?.length && <p className="deck-meta">Oprávnění: <span className="deck-mono">{status.raqeto.scopes.join(", ")}</span></p>}
+        {status?.raqeto?.configured && (
+          <p className="deck-meta">
+            Fronta pro AI: {status.raqetoQueue?.enabled ? "zapnuto" : "vypnuto"}
+            {status.raqetoQueue?.lastPollAt ? ` · poslední kontrola ${fmtTime(status.raqetoQueue.lastPollAt)}` : ""}
+            {status.raqetoQueue?.processing ? ` · zpracovává „${status.raqetoQueue.processing.title}“` : ""}
+          </p>
+        )}
         {status?.raqeto?.error && <p className="deck-note deck-err">{status.raqeto.error}</p>}
         {status && !status.raqeto?.configured && (
           <p className="deck-note">Nastav <span className="deck-mono">RAQETO_API_TOKEN</span> (a případně <span className="deck-mono">RAQETO_API_BASE</span>) v <span className="deck-mono">.env.local</span> a restartuj server.</p>
@@ -985,7 +1293,7 @@ export default function ApexDeck({ section, onSection, onClose, status, refreshK
       <div className="deck-body">
         {section === "approvals" && <ApprovalsTab reloadKey={reloadKey} onChanged={onChanged} />}
         {section === "jobs" && <JobsTab reloadKey={reloadKey} />}
-        {section === "crm" && <CrmTab reloadKey={reloadKey} />}
+        {section === "crm" && <CrmTab reloadKey={reloadKey} status={status} onChanged={onChanged} />}
         {section === "loops" && <LoopsTab reloadKey={reloadKey} />}
         {section === "memory" && <MemoryTab reloadKey={reloadKey} status={status} />}
         {section === "guide" && <GuideTab reloadKey={reloadKey} />}

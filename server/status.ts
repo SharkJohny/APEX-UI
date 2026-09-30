@@ -5,6 +5,7 @@ import { detectProviders } from "./llm";
 import { googleStatus } from "./integrations/google";
 import { socialStatus } from "./integrations/social";
 import { raqetoStatus } from "./integrations/raqeto";
+import { raqetoQueueStatus } from "./raqetoQueue";
 import { semanticStatus } from "./semantic";
 import { vaultStatus } from "./vault";
 import { ROSTER, type AgentKey, type AgentStatus } from "@/lib/roster";
@@ -62,7 +63,7 @@ export function apexStatus() {
         if (!raqeto.configured) return { status: "integration", note: "Nastav RAQETO_API_TOKEN v .env.local" };
         return raqeto.ok === false
           ? { status: "online", note: `Raqeto CRM – poslední dotaz selhal${raqeto.error ? `: ${raqeto.error}` : ""}` }
-          : { status: "online", note: "Raqeto CRM" };
+          : { status: "online", note: raqeto.ok && raqeto.workspace?.name ? `Raqeto CRM – ${raqeto.workspace.name}` : "Raqeto CRM" };
       case "analytics":
         return { status: "online", note: "Lokální databáze" };
       case "social_media":
@@ -95,6 +96,7 @@ export function apexStatus() {
     vault,
     semantic,
     raqeto,
+    raqetoQueue: raqetoQueueStatus(),
     tts: process.env.OPENAI_API_KEY ? "openai" : "browser",
     pendingActions: get<{ n: number }>("SELECT COUNT(*) AS n FROM actions WHERE status = 'pending'")?.n ?? 0,
   };

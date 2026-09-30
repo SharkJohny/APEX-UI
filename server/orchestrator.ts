@@ -141,8 +141,9 @@ export async function runSpecialist(opts: {
     provider: opts.provider,
     parentId: opts.parent?.id,
     source: opts.parent?.source ?? opts.source ?? "chat",
-    // a loop reads mail / web on its own - treat it as tainted from the start
-    tainted: opts.parent?.tainted || (opts.source ?? "").startsWith("loop:"),
+    // loops read mail / web on their own and Raqeto queue tasks carry client
+    // text - no human typed the request, so treat them as tainted from the start
+    tainted: opts.parent?.tainted || /^(loop|raqeto):/.test(opts.source ?? ""),
     emit,
     signal: ctl.signal,
   });
