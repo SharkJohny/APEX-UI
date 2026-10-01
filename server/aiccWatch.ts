@@ -1,5 +1,5 @@
 import { all, get, run } from "./db";
-import { aiccAvailable, brief, listTerminals, readRoadmap, recentSessions, type AiccTerminal } from "./integrations/aicc";
+import { aiccAvailable, brief, listTerminals, readRoadmap, readTurns, sessionOf, sessionsFor, type AiccTerminal } from "./integrations/aicc";
 
 /* Watches the owner's AI Command Center windows and records what changed:
  * an agent finished its turn, a window waits for him, a roadmap step got
@@ -25,8 +25,13 @@ const S: WatchState = (g.__apexAicc ??= {});
 const enabled = () => process.env.APEX_AICC !== "0";
 const winName = (t: AiccTerminal) => (t.title && !/^Termin[aá]l \d+$/.test(t.title) ? `${t.projectName} · ${t.title}` : t.projectName || t.cwd);
 
+/* Every short notification Apex shows (windows, new chat messages) lands here. */
+export function recordEvent(kind: string, project: string, terminalId: string, win: string, text: string) {
+  run("INSERT INTO aicc_events (kind, project, terminal_id, win, text) VALUES (?,?,?,?,?)", kind, project, terminalId, win, text);
+}
+
 function record(kind: string, t: Pick<AiccTerminal, "projectName" | "id"> | null, win: string, text: string) {
-  run("INSERT INTO aicc_events (kind, project, terminal_id, win, text) VALUES (?,?,?,?,?)", kind, t?.projectName ?? "", t?.id ?? "", win, text);
+  recordEvent(kind, t?.projectName ?? "", t?.id ?? "", win, text);
 }
 
 export async function aiccTick(): Promise<void> {
@@ -36,25 +41,25 @@ export async function aiccTick(): Promise<void> {
     const terminals = await listTerminals();
     const next: Snapshot = { terminals: new Map(terminals.map((t) => [t.id, t])), sessions: new Map(), roadmaps: new Map() };
     const prev = S.prev;
-    const byCwd = new Map<string, AiccTerminal[]>();
-    for (const t of terminals) byCwd.set(t.cwd, [...(byCwd.get(t.cwd) ?? []), t]);
-
-    for (const [cwd, list] of byCwd) {
-      const finishedHere: string[] = [];
-      // one transcript per agent window in this folder (newest first)
-      for (const s of recentSessions(cwd, list.length)) {
-        if (!s.lastAssistantId) continue;
-        next.sessions.set(s.file, s.finished ? s.lastAssistantId : prev?.sessions.get(s.file) ?? "");
-        if (prev && s.finished && prev.sessions.get(s.file) !== s.lastAssistantId && Date.now() - s.mtime < 10 * 60_000) {
-          finishedHere.push(brief(s.lastAssistant));
-        }
+    const sessions = sessionsFor(terminals);
+    archiveWindows(terminals, sessions);
+    const finishedIn = new Set<string>();
+    for (const t of terminals) {
+      const sess = sessionOf(sessions.get(t.id));
+      if (!sess?.lastAssistantId) continue;
+      const answered = sess.finished && sess.status !== "busy";
+      next.sessions.set(sess.file, answered ? sess.lastAssistantId : prev?.sessions.get(sess.file) ?? "");
+      if (prev && answered && prev.sessions.has(sess.file) && prev.sessions.get(sess.file) !== sess.lastAssistantId && Date.now() - sess.mtime < 10 * 60_000) {
+        record("done", t, winName(t), brief(sess.lastAssistant) || "dokončilo práci");
+        finishedIn.add(t.id);
       }
-      const t = list[0];
-      for (const text of finishedHere) record("done", t, winName(t), text || "dokončilo práci");
-      // waits for the owner - unless the same tick already said it finished
-      for (const w of list) {
-        if (prev && w.attention && !prev.terminals.get(w.id)?.attention && !finishedHere.length) record("attention", w, winName(w), "čeká na tebe");
-      }
+    }
+    // waits for the owner - unless the same tick already said it finished
+    for (const t of terminals) {
+      if (prev && t.attention && !prev.terminals.get(t.id)?.attention && !finishedIn.has(t.id)) record("attention", t, winName(t), "čeká na tebe");
+    }
+    for (const cwd of new Set(terminals.map((t) => t.cwd))) {
+      const t = terminals.find((x) => x.cwd === cwd)!;
       const done = new Set(readRoadmap(cwd).filter((i) => i.done).map((i) => i.text));
       next.roadmaps.set(cwd, done);
       const before = prev?.roadmaps.get(cwd);
@@ -77,6 +82,30 @@ export async function aiccTick(): Promise<void> {
   }
 }
 
+/* Copies new turns of every window's Claude Code session into agent_archive,
+ * so Apex remembers what was asked and done in each project. */
+const TURN_MAX = 4000;
+function archiveWindows(terminals: AiccTerminal[], sessions: ReturnType<typeof sessionsFor>) {
+  if (process.env.APEX_AICC_ARCHIVE === "0") return;
+  for (const t of terminals) {
+    const sess = sessionOf(sessions.get(t.id));
+    if (!sess) continue;
+    try {
+      const pos = get<{ offset: number }>("SELECT offset FROM agent_archive_pos WHERE file = ?", sess.file)?.offset;
+      const { turns, offset } = readTurns(sess.file, pos);
+      const sessionId = sess.file.slice(sess.file.lastIndexOf("/") + 1, -".jsonl".length);
+      for (const turn of turns) {
+        run(`INSERT OR IGNORE INTO agent_archive (project, win, cwd, session_id, role, text, at, key) VALUES (?,?,?,?,?,?,?,?)`,
+          t.projectName, winName(t), t.cwd, sessionId, turn.role,
+          turn.text.length > TURN_MAX ? `${turn.text.slice(0, TURN_MAX)}…` : turn.text, turn.at ?? null, turn.uuid);
+      }
+      run(`INSERT INTO agent_archive_pos (file, offset) VALUES (?,?) ON CONFLICT(file) DO UPDATE SET offset = excluded.offset`, sess.file, offset);
+    } catch (e) {
+      S.lastError = `archiv ${winName(t)}: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+}
+
 export function startAiccWatch(): void {
   if (S.started) return;
   S.started = true;
@@ -95,11 +124,11 @@ export function aiccEvents(opts: { after?: number; limit?: number } = {}): AiccE
 
 /* Chief context: what changed since the chief last heard about it (short). */
 export function aiccChiefBlock(): string {
-  const rows = all<AiccEvent>("SELECT * FROM aicc_events WHERE chief_seen = 0 AND kind IN ('done','attention','roadmap') ORDER BY id DESC LIMIT 8").reverse();
+  const rows = all<AiccEvent>("SELECT * FROM aicc_events WHERE chief_seen = 0 AND kind IN ('done','attention','roadmap','message') ORDER BY id DESC LIMIT 8").reverse();
   if (!rows.length) return "";
   run("UPDATE aicc_events SET chief_seen = 1 WHERE id <= ? AND chief_seen = 0", rows[rows.length - 1].id);
   const lines = rows.map((r) => `- ${r.created_at.slice(11, 16)} ${r.win}: ${r.text}`);
-  return `Novinky z oken v AI Command Center (od minula; podrobnosti aicc_window, poslat zprávu do okna jen návrhem propose_aicc_send):\n${lines.join("\n")}`;
+  return `Novinky od minula – okna v AI Command Center a nové zprávy (podrobnosti aicc_window / messages_history; do okna píšeš jen návrhem propose_aicc_send, zprávy nikdy neposíláš):\n${lines.join("\n")}`;
 }
 
 export function lastEventId(): number {

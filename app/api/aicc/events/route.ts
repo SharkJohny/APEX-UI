@@ -11,6 +11,6 @@ export async function GET(request: Request) {
   if (!isLoopback(request)) return NextResponse.json({ error: "local only" }, { status: 403 });
   const after = new URL(request.url).searchParams.get("after");
   if (after === null) return NextResponse.json({ last: lastEventId(), events: [], toast: process.env.APEX_AICC_TOAST !== "0" });
-  const events = aiccEvents({ after: Number(after) || 0, limit: 10 }).filter((e) => e.kind === "done" || e.kind === "attention");
+  const events = aiccEvents({ after: Number(after) || 0, limit: 10 }).filter((e) => e.kind === "done" || e.kind === "attention" || e.kind === "message");
   return NextResponse.json({ last: lastEventId(), events, toast: process.env.APEX_AICC_TOAST !== "0" });
 }

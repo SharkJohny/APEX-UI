@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EnergyVad, askApexOutput, collectTurn, ndjsonSplitter, pickRecorderMime, rms, type ApexEvent } from "./voiceCore";
+import { EnergyVad, askApexOutput, collectTurn, ndjsonSplitter, pickRecorderMime, rms, voicedPart, type ApexEvent } from "./voiceCore";
 import { useRealtimeVoice, type RealtimePhase } from "./useRealtimeVoice";
 
 /* The voice loop behind the orb: listen (browser speech recognition, or a
@@ -119,6 +119,8 @@ export function useApexVoice() {
   const rec = useRef<Recording | null>(null); // OpenAI STT recording in progress
   const finishListen = useRef<(() => void) | null>(null); // send what was dictated now (tap / Enter)
   const pauseMs = useRef(6000);           // dictation: silence before the utterance is sent (Settings › Hlas)
+  const configRetries = useRef(0);
+  const loadConfigRef = useRef<(() => Promise<void>) | null>(null);
   const queue = useRef<string[]>([]);
   const playing = useRef<number | null>(null); // run id whose queue is being spoken
   const streamDone = useRef(true);
@@ -150,6 +152,7 @@ export function useApexVoice() {
     return fetch("/api/providers")
       .then((r) => r.json())
       .then((d: ProvidersResponse) => {
+        configRetries.current = 0;
         const list = d.providers || [];
         setProviders(list);
         setTts(d.tts === "elevenlabs" || d.tts === "openai" ? d.tts : "browser");
@@ -165,8 +168,15 @@ export function useApexVoice() {
         if (pick) setProviderState(pick.id);
         else setError("Nenašel jsem žádného AI poskytovatele. Nainstaluj a přihlas claude, codex nebo gemini CLI.");
       })
-      .catch(() => setError("Nepodařilo se načíst seznam poskytovatelů."));
+      .catch(() => {
+        // Usually the dev server restarting: keep the last good setup and try
+        // again shortly, instead of silently falling back to the browser voice.
+        configRetries.current += 1;
+        if (configRetries.current <= 20) setTimeout(() => { void loadConfigRef.current?.(); }, 3_000);
+        else setError("Nepodařilo se načíst seznam poskytovatelů.");
+      });
   }, []);
+  loadConfigRef.current = loadConfig;
 
   useEffect(() => {
     const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
@@ -181,9 +191,15 @@ export function useApexVoice() {
     // The Settings drawer announces changes; voice mode / keys may have moved.
     const onSettings = () => { void loadConfig(); };
     window.addEventListener("apex:settings-changed", onSettings);
+    // back to the tab (e.g. after the server restarted meanwhile): refresh the voice setup
+    const onVisible = () => { if (document.visibilityState === "visible") void loadConfig(); };
+    document.addEventListener("visibilitychange", onVisible);
     // Chrome loads voices lazily; touching the list early warms it up.
     try { window.speechSynthesis?.getVoices(); } catch { /* no TTS */ }
-    return () => window.removeEventListener("apex:settings-changed", onSettings);
+    return () => {
+      window.removeEventListener("apex:settings-changed", onSettings);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [loadConfig]);
 
   const canListen = voiceMode === "realtime" ? caps.rtc : stt === "openai" ? caps.recorder : caps.recognition;
@@ -235,7 +251,13 @@ export function useApexVoice() {
     const el = new Audio(URL.createObjectURL(blob));
     audio.current = el;
     el.onended = el.onerror = () => { URL.revokeObjectURL(el.src); resolve(); };
-    el.play().catch(() => resolve());
+    el.play().catch((e: unknown) => {
+      // Chrome blocks sound until the page has been clicked since it loaded
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        setError("Prohlížeč zablokoval zvuk – klepni kamkoli do stránky a Apex bude zase mluvit.");
+      }
+      resolve();
+    });
   }), []);
 
   const serverFailed = useCallback((e: unknown, text: string, id: number): Promise<void> => {
@@ -490,17 +512,28 @@ export function useApexVoice() {
     abort.current = ctrl;
     let full = "";
     let pending = "";
+    let spoken = 0;         // chars of the voiced part already queued for speech
+    let voiceDone = false;  // reached the details mark: the rest is not spoken
     let failure: string | null = null;
 
     try {
       const fresh = await streamChat(history, ctrl.signal, () => id === run.current, (ev) => {
         if (ev.t === "token") {
           full += ev.v;
-          pending += ev.v;
           setPartial(full);
+          if (voiceDone) return;
+          // only the short answer before the details mark is spoken
+          const v = voicedPart(full);
+          pending += v.text.slice(spoken);
+          spoken = v.text.length;
           const [sentences, rest] = takeSentences(pending);
           pending = rest;
           enqueue(sentences, id);
+          if (v.complete) {
+            voiceDone = true;
+            if (pending.trim()) enqueue([pending.trim()], id);
+            pending = "";
+          }
         } else if (ev.t === "error") {
           failure = ev.v;
         }

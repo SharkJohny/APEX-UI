@@ -65,12 +65,34 @@ const MAX_ANSWER = 6000;
 
 /* The function_call_output string for ask_apex. Proposed actions are spelled
  * out as NOT done yet, so the voice model can't claim they happened. */
+/* ── short answer + details ──
+ * The chief answers with 1–2 short sentences (spoken) and, only when useful,
+ * a line DETAIL_MARK followed by details (shown on click, never spoken). */
+export const DETAIL_MARK = "§§";
+
+export function splitAnswer(text: string): { short: string; details: string } {
+  const i = text.indexOf(DETAIL_MARK);
+  if (i < 0) return { short: text.trim(), details: "" };
+  return { short: text.slice(0, i).trim(), details: text.slice(i + DETAIL_MARK.length).trim() };
+}
+
+/* The part of a still-streaming answer that may be spoken: everything before
+ * the mark, holding back a trailing "§" that may be the mark's first half. */
+export function voicedPart(full: string): { text: string; complete: boolean } {
+  const i = full.indexOf(DETAIL_MARK);
+  if (i >= 0) return { text: full.slice(0, i), complete: true };
+  return { text: full.endsWith(DETAIL_MARK[0]) ? full.slice(0, -1) : full, complete: false };
+}
+
 export function askApexOutput(r: TurnResult): string {
-  const text = r.text.trim();
+  // the realtime voice speaks the answer: give it the short part only
+  const { short, details } = splitAnswer(r.text);
+  const text = short;
   const out: Record<string, unknown> = {
     ok: !r.failure || !!text,
     answer: text ? text.slice(0, MAX_ANSWER) : r.failure ? "" : "Apex neodpověděl žádným textem.",
   };
+  if (details) out.note_details = "Podrobnosti má majitel v chatu – neříkej je, pokud se nezeptá.";
   if (r.failure) out.error = r.failure;
   if (r.actions.length) {
     out.pending_approvals = r.actions.map((a) => ({ id: a.id, kind: a.kind, summary: a.summary }));

@@ -6,6 +6,7 @@ import type { Activity, VoiceMode, useApexVoice } from "./useApexVoice";
 import { ACTIONS_CHANGED, ActionDetails, CopyButton, notifyActionsChanged, parsePayload, type ActionRow, type DeckSection } from "./ApexDeck";
 import { apiJson, asList } from "./useApexStatus";
 import { ROSTER_BY_KEY } from "@/lib/roster";
+import { DETAIL_MARK, splitAnswer } from "./voiceCore";
 
 /* Bottom-right conversation panel: transcript, the current turn's agent
  * activity (jobs, proposed actions, notes), text input (for browsers without
@@ -116,7 +117,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
         )}
         {messages.length > 0 && (
           <CopyButton
-            text={() => messages.map((m) => `**${m.role === "user" ? "Ty" : "Apex"}:** ${m.content}`).join("\n\n")}
+            text={() => messages.map((m) => `**${m.role === "user" ? "Ty" : "Apex"}:** ${plain(m.content)}`).join("\n\n")}
             label="Kopírovat konverzaci"
             title="Kopírovat konverzaci (Markdown)"
             className="copy-btn copy-btn-icon"
@@ -290,8 +291,18 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
   );
 }
 
+/* A reply with the details mark, as one readable text (copying). */
+const plain = (text: string) => {
+  const { short, details } = splitAnswer(text);
+  return details ? `${short}\n\n${details}` : short;
+};
+
 function Bubble({ role, text, faint }: { role: "user" | "assistant"; text: string; faint?: boolean }) {
   const mine = role === "user";
+  const [open, setOpen] = useState(false);
+  // the spoken short answer first; details (after the mark) on click
+  const { short, details } = mine ? { short: text, details: "" } : splitAnswer(text);
+  const streamingDetails = faint && !mine && text.includes(DETAIL_MARK);
   return (
     <div
       className="dock-bubble"
@@ -303,8 +314,17 @@ function Bubble({ role, text, faint }: { role: "user" | "assistant"; text: strin
         opacity: faint ? 0.7 : 1,
       }}
     >
-      {text}
-      {!faint && text && <CopyButton text={text} label="Kopírovat zprávu" className="copy-btn dock-bubble-copy" />}
+      {short}
+      {streamingDetails && <span className="dock-details-hint"> · píšu podrobnosti…</span>}
+      {details && !faint && (
+        <>
+          <button type="button" className="dock-details-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Podrobnosti
+          </button>
+          {open && <div className="dock-details">{details}</div>}
+        </>
+      )}
+      {!faint && text && <CopyButton text={mine ? text : plain(text)} label="Kopírovat zprávu" className="copy-btn dock-bubble-copy" />}
     </div>
   );
 }

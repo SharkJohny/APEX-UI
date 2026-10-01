@@ -10,7 +10,7 @@ import { readVaultText, walkVault } from "./vault";
  * a cached per-source matrix blended with normalized BM25.
  * Models are cached under data/models (APEX_MODELS_DIR overrides). */
 
-export type SemSource = "vault" | "memory" | "messages" | "chats";
+export type SemSource = "vault" | "memory" | "messages" | "chats" | "windows";
 export type SemHit = { source: SemSource; ref: string; title: string; text: string; score: number };
 
 const MODEL = "Xenova/multilingual-e5-small";
@@ -22,7 +22,7 @@ const RAW_MAX_CHUNKS = 40;
 const FILE_MAX_CHUNKS = 200;
 const RAW_WEIGHT = 0.97;
 const INTERVAL_MS = 5 * 60_000;
-const SOURCES: SemSource[] = ["vault", "memory", "messages", "chats"];
+const SOURCES: SemSource[] = ["vault", "memory", "messages", "chats", "windows"];
 /* Bump when chunking changes so every vault note is re-embedded once. */
 const CHUNKER_VERSION = "2";
 
@@ -351,6 +351,51 @@ async function indexChats(): Promise<void> {
   setMeta("chats_last_id", String(maxId));
 }
 
+/* The AI Command Center windows archive (agent_archive): per agent session,
+ * ref = "<session_id>:<first archive id>", tail re-chunked like the others. */
+async function indexWindows(): Promise<void> {
+  const lastId = Number(meta("windows_last_id") ?? 0);
+  const maxId = get<{ m: number | null }>("SELECT MAX(id) AS m FROM agent_archive")?.m ?? 0;
+  if (!maxId || maxId <= lastId) return;
+  const sessions = all<{ session_id: string }>("SELECT DISTINCT session_id FROM agent_archive WHERE id > ? AND id <= ?", lastId, maxId);
+  for (const { session_id } of sessions) {
+    const prefix = `${session_id}:`;
+    const tail = get<{ ref: string; chunk_no: number }>(
+      "SELECT ref, chunk_no FROM sem_chunks WHERE source = 'windows' AND substr(ref, 1, ?) = ? ORDER BY chunk_no DESC LIMIT 1",
+      prefix.length, prefix,
+    );
+    const fromId = tail ? Number(tail.ref.slice(prefix.length)) : 0;
+    const startNo = tail ? tail.chunk_no : 0;
+    const turns = all<{ id: number; win: string; role: string; text: string; at: string | null }>(
+      "SELECT id, win, role, text, at FROM agent_archive WHERE session_id = ? AND id >= ? AND id <= ? ORDER BY id",
+      session_id, fromId, maxId,
+    );
+    if (!turns.length) continue;
+    const title = `Okno ${turns[turns.length - 1].win}`;
+    const rows: Row[] = [];
+    let buf = "";
+    let firstId = 0;
+    const flush = () => {
+      if (!buf.trim()) return;
+      rows.push({ source: "windows", ref: `${prefix}${firstId}`, title, chunk_no: startNo + rows.length, text: buf.trim(), hash: sha1(buf), mtime: 0 });
+      buf = "";
+    };
+    for (const t of turns) {
+      const who = t.role === "user" ? "Majitel" : "Agent";
+      const when = t.at ? new Date(t.at).toLocaleString("cs-CZ", { timeZone: "Europe/Prague", day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+      for (const piece of windows(`[${when}] ${who}: ${t.text}`)) {
+        if (buf && buf.length + piece.length + 1 > CHUNK) flush();
+        if (!buf) firstId = t.id;
+        buf += piece + "\n";
+      }
+    }
+    flush();
+    await replaceChunks("windows", rows,
+      "DELETE FROM sem_chunks WHERE source = 'windows' AND substr(ref, 1, ?) = ? AND chunk_no >= ?", [prefix.length, prefix, startNo]);
+  }
+  setMeta("windows_last_id", String(maxId));
+}
+
 async function indexAll(): Promise<void> {
   if (S.indexing) return;
   S.indexing = true;
@@ -358,7 +403,7 @@ async function indexAll(): Promise<void> {
   const errors: string[] = [];
   try {
     await loadExtractor();
-    for (const [name, fn] of [["paměť", indexMemory], ["vault", indexVault], ["konverzace", indexMessages], ["chaty", indexChats]] as const) {
+    for (const [name, fn] of [["paměť", indexMemory], ["vault", indexVault], ["konverzace", indexMessages], ["chaty", indexChats], ["okna", indexWindows]] as const) {
       try {
         const errs = await fn();
         if (Array.isArray(errs)) errors.push(...errs.slice(0, 5));
@@ -413,8 +458,8 @@ export async function reindexVaultPaths(paths: string[]): Promise<void> {
   }
 }
 
-export function semanticStatus(): { ready: boolean; model: string; indexed: { vault: number; memory: number; messages: number; chats: number }; lastIndexedAt?: string; error?: string; indexing: boolean; lastPassMs?: number } {
-  const indexed = { vault: 0, memory: 0, messages: 0, chats: 0 };
+export function semanticStatus(): { ready: boolean; model: string; indexed: { vault: number; memory: number; messages: number; chats: number; windows: number }; lastIndexedAt?: string; error?: string; indexing: boolean; lastPassMs?: number } {
+  const indexed = { vault: 0, memory: 0, messages: 0, chats: 0, windows: 0 };
   let error = S.error;
   try {
     for (const r of all<{ source: SemSource; n: number }>("SELECT source, COUNT(DISTINCT ref) AS n FROM sem_chunks GROUP BY source")) {

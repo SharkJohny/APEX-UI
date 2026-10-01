@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import { all, get, run } from "./db";
 import { rbChats, rbMessages, ramboxOn, type Msg } from "./integrations/messages";
+import { recordEvent } from "./aiccWatch";
+import { brief } from "./integrations/aicc";
 
-/* Apex's memory of the owner's chats: every few minutes the chats that got
- * new messages in Rambox (WhatsApp Web, Messenger) are copied into
- * chat_archive, so "what did I write with X" works even when Rambox is
- * closed, and the semantic indexer can find it. Read-only towards the chats. */
+/* Apex's memory of the owner's chats: every few minutes (Settings, default 5)
+ * the chats that got new messages in Rambox (WhatsApp Web, Messenger) are
+ * copied into chat_archive, so "what did I write with X" works even when
+ * Rambox is closed, and the semantic indexer can find it. New messages from
+ * other people become a short notification (and the chief hears about them).
+ * Read-only towards the chats. */
 
-const INTERVAL_MS = 10 * 60_000;
+const intervalMs = () => Math.min(60, Math.max(1, Number(process.env.APEX_MSG_SYNC_MIN) || 5)) * 60_000;
+const notifyOn = () => process.env.APEX_MSG_NOTIFY !== "0";
+const LABEL = { whatsapp: "WhatsApp", messenger: "Messenger" } as const;
 const WA_CHATS = 40;
 const WA_MSGS = 100;
 const MS_CHATS = 25;
@@ -15,15 +21,17 @@ const MS_CHATS = 25;
 const MS_THREADS_PER_RUN = 5;
 const MS_MSGS = 40;
 
-type SyncState = { started?: boolean; busy?: boolean; timer?: ReturnType<typeof setInterval>; lastRunAt?: string; lastError?: string; lastAdded?: number };
+type SyncState = { started?: boolean; busy?: boolean; timer?: ReturnType<typeof setTimeout>; lastRunAt?: string; lastError?: string; lastAdded?: number };
 const g = globalThis as { __apexChatSync?: SyncState };
 const S: SyncState = (g.__apexChatSync ??= {});
 
 const enabled = () => process.env.APEX_MSG_ARCHIVE !== "0";
 const sha1 = (s: string) => createHash("sha1").update(s).digest("hex");
 
-function store(msgs: Msg[], chatName: string): number {
+/* Saves new messages; returns how many were new and the new ones from other people. */
+function store(msgs: Msg[], chatName: string): { added: number; incoming: Msg[] } {
   let added = 0;
+  const incoming: Msg[] = [];
   for (const m of msgs) {
     if (!m.text.trim()) continue;
     // WhatsApp has stable ids; Messenger only what the bubble shows
@@ -32,9 +40,20 @@ function store(msgs: Msg[], chatName: string): number {
       `INSERT OR IGNORE INTO chat_archive (source, chat_id, chat_name, at, time_label, sender, me, text, key) VALUES (?,?,?,?,?,?,?,?,?)`,
       m.source, m.chat, m.chatName || chatName, m.at, m.time ?? "", m.from, m.me ? 1 : 0, m.text, key,
     );
-    added += Number(r.changes);
+    if (Number(r.changes)) {
+      added++;
+      if (!m.me) incoming.push(m);
+    }
   }
-  return added;
+  return { added, incoming };
+}
+
+/* One short notification per chat and sync - never for a chat's first backfill. */
+function announce(source: "whatsapp" | "messenger", name: string, known: boolean, incoming: Msg[]) {
+  if (!known || !incoming.length || !notifyOn()) return;
+  const last = incoming[incoming.length - 1];
+  const text = incoming.length === 1 ? brief(last.text, 110) : `${incoming.length} nové zprávy, poslední: ${brief(last.text, 80)}`;
+  recordEvent("message", LABEL[source], "", `${LABEL[source]} · ${name}`, text);
 }
 
 function fingerprint(source: string, chat: string): string | undefined {
@@ -58,9 +77,12 @@ export async function syncChats(): Promise<{ added: number; errors: string[] }> 
       try {
         for (const c of await rbChats("whatsapp", WA_CHATS)) {
           const fp = `${c.last}|${c.snippet}`;
-          if (fingerprint("whatsapp", c.chat) === fp) continue;
+          const before = fingerprint("whatsapp", c.chat);
+          if (before === fp) continue;
           try {
-            added += store(await rbMessages("whatsapp", c.chat, WA_MSGS, true), c.name);
+            const r = store(await rbMessages("whatsapp", c.chat, WA_MSGS, true), c.name);
+            added += r.added;
+            announce("whatsapp", c.name, before !== undefined, r.incoming);
             markSynced("whatsapp", c.chat, c.name, fp);
           } catch (e) {
             errors.push(`WhatsApp ${c.name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -75,10 +97,13 @@ export async function syncChats(): Promise<{ added: number; errors: string[] }> 
         let threads = 0;
         for (const c of await rbChats("messenger", MS_CHATS)) {
           const fp = c.snippet;
-          if (fingerprint("messenger", c.chat) === fp) continue;
+          const before = fingerprint("messenger", c.chat);
+          if (before === fp) continue;
           if (threads++ >= MS_THREADS_PER_RUN) break;
           try {
-            added += store(await rbMessages("messenger", c.chat, MS_MSGS, true), c.name);
+            const r = store(await rbMessages("messenger", c.chat, MS_MSGS, true), c.name);
+            added += r.added;
+            announce("messenger", c.name, before !== undefined, r.incoming);
             markSynced("messenger", c.chat, c.name, fp);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -99,14 +124,19 @@ export async function syncChats(): Promise<{ added: number; errors: string[] }> 
   }
 }
 
-/* One pass shortly after start, then every 10 minutes. Idempotent. */
+/* One pass shortly after start, then every APEX_MSG_SYNC_MIN minutes
+ * (read each time, so a Settings change applies to the next wait). Idempotent. */
 export function startChatSync(): void {
   if (S.started) return;
   S.started = true;
-  const tick = () => { syncChats().catch((e) => { S.lastError = String(e); }); };
-  setTimeout(tick, 30_000).unref?.();
-  S.timer = setInterval(tick, INTERVAL_MS);
-  S.timer.unref?.();
+  const loop = (delay: number) => {
+    S.timer = setTimeout(async () => {
+      await syncChats().catch((e) => { S.lastError = String(e); });
+      loop(intervalMs());
+    }, delay);
+    S.timer.unref?.();
+  };
+  loop(30_000);
 }
 
 export function chatSyncStatus() {

@@ -390,3 +390,15 @@ body {
 .aicc-x:hover { color: #fff; }
 .aicc-x:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; border-radius: 4px; }
 @media (prefers-reduced-motion: reduce) { .aicc-toast { animation: none; } }
+.aicc-message { border-color: rgba(80, 220, 140, 0.5); }
+.aicc-message .aicc-dot { background: #50dc8c; box-shadow: 0 0 8px #50dc8c; }
+
+/* Chat: short spoken answer + details on click (ApexChatDock Bubble) */
+.dock-details-btn {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px; padding: 2px 0;
+  background: none; border: none; color: #ffd080; cursor: pointer; font: inherit; font-size: 12px;
+}
+.dock-details-btn:hover { color: #fff; }
+.dock-details-btn:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; border-radius: 4px; }
+.dock-details { margin-top: 4px; padding-top: 6px; border-top: 1px solid rgba(245, 166, 35, 0.2); opacity: 0.9; }
+.dock-details-hint { opacity: 0.6; font-size: 12px; }

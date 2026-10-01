@@ -217,7 +217,9 @@ const GROUPS: GroupDef[] = [
     ],
     fields: [
       { key: "APEX_MSG_RAMBOX", label: "Číst WhatsApp a Messenger z Ramboxu", type: "bool", default: "1", help: "Rambox musí běžet přes Apex bridge (npm run rambox, nebo automaticky po přihlášení). Bez bridge se použije WhatsApp pro Mac / token stránky." },
-      { key: "APEX_MSG_ARCHIVE", label: "Pamatovat si zprávy (archiv)", type: "bool", default: "1", help: "Každých 10 minut uloží nové zprávy z WhatsAppu a Messengeru v Ramboxu do paměti Apexu, aby věděl, co se s kým psalo, i když Rambox neběží." },
+      { key: "APEX_MSG_ARCHIVE", label: "Pamatovat si zprávy (archiv)", type: "bool", default: "1", help: "Pravidelně ukládá nové zprávy z WhatsAppu a Messengeru v Ramboxu do paměti Apexu, aby věděl, co se s kým psalo, i když Rambox neběží." },
+      { key: "APEX_MSG_SYNC_MIN", label: "Kontrola nových zpráv (minuty)", type: "number", min: 1, max: 60, default: "5" },
+      { key: "APEX_MSG_NOTIFY", label: "Hlásit nové zprávy", type: "bool", default: "1", help: "Když ti někdo napíše, Apex ukáže krátké oznámení a při dalším hovoru o tom ví." },
       { key: "APEX_MSG_WHATSAPP", label: "Číst WhatsApp", type: "bool", default: "1", help: "Z Ramboxu přes bridge, jinak z aplikace WhatsApp pro Mac." },
       { key: "APEX_WHATSAPP_DB", label: "WhatsApp – cesta k databázi", type: "text", placeholder: "~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite", help: "Nech prázdné pro výchozí umístění." },
       { key: "APEX_MSG_IMESSAGE", label: "Číst iMessage / SMS", type: "bool", default: "1" },
@@ -233,7 +235,8 @@ const GROUPS: GroupDef[] = [
     links: [],
     fields: [
       { key: "APEX_AICC", label: "Sledovat okna AI Command Center", type: "bool", default: "1" },
-      { key: "APEX_AICC_TOAST", label: "Oznámení změn v Apexu", type: "bool", default: "1", help: "Krátká bublina vpravo dole, když okno dokončí práci nebo čeká na tebe." },
+      { key: "APEX_AICC_TOAST", label: "Oznámení v Apexu", type: "bool", default: "1", help: "Krátká bublina vpravo nahoře, když okno dokončí práci, čeká na tebe nebo ti přijde nová zpráva." },
+      { key: "APEX_AICC_ARCHIVE", label: "Pamatovat si práci v oknech", type: "bool", default: "1", help: "Průběžně ukládá zadání a odpovědi agentů z oken (Claude Code) do paměti Apexu." },
     ],
     actions: [{ id: "test-aicc", label: "Ověřit spojení", test: "aicc" }],
   },

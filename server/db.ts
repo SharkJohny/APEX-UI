@@ -261,6 +261,27 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // What the owner and the agents said in his AI Command Center windows
+  // (Claude Code transcripts), so Apex remembers the work in each project.
+  `
+  CREATE TABLE agent_archive (
+    id INTEGER PRIMARY KEY,
+    project TEXT NOT NULL DEFAULT '',
+    win TEXT NOT NULL DEFAULT '',
+    cwd TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    at TEXT,
+    key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX agent_archive_project ON agent_archive (project, id);
+  CREATE TABLE agent_archive_pos (
+    file TEXT PRIMARY KEY,
+    offset INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 function migrate(db: DatabaseSync) {
