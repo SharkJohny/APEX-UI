@@ -25,6 +25,7 @@ import ApexChatDock from "./ApexChatDock";
 import ApexDeck, { ACTIONS_CHANGED, CopyButton, type DeckSection } from "./ApexDeck";
 import ApexSettings from "./ApexSettings";
 import ApexApprovalPopup from "./ApexApprovalPopup";
+import ApexAiccToasts from "./ApexAiccToasts";
 import { useApexVoice } from "./useApexVoice";
 import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
 import { ROSTER, ROSTER_BY_KEY, type AgentStatus } from "@/lib/roster";
@@ -395,6 +396,7 @@ export default function ApexWorld() {
       />
 
       <ApexApprovalPopup onOpenDeck={() => openDeck("approvals")} suppressed={deck === "approvals"} />
+      <ApexAiccToasts />
     </div>
   );
 }

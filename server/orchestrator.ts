@@ -8,6 +8,7 @@ import { isSessionLost, llmTimeoutMs, providerSupportsTools, runLlm, type LlmRes
 import { semanticSearch, semanticStatus } from "./semantic";
 import { untrusted } from "./tools/registry";
 import { vaultDir, vaultPersona } from "./vault";
+import { aiccChiefBlock } from "./aiccWatch";
 import { ROSTER_BY_KEY, type AgentKey } from "@/lib/roster";
 
 /* The turn loop. The user always talks to the Chief of staff; it can delegate
@@ -201,7 +202,9 @@ export async function runTurn(opts: {
     const cwd = SESSION_PROVIDERS.has(opts.provider) ? sessionCwd(conversationId) : undefined;
     const stored = cwd ? get<ConversationRow>("SELECT * FROM conversations WHERE id = ?", conversationId) : undefined;
     const resumable = stored?.provider === opts.provider && stored.session_id && stored.ctx_tokens < sessionMaxTokens() ? stored : undefined;
-    const pending = pendingBlock();
+    const aicc = aiccChiefBlock();
+    // agents' text from other windows: data, not instructions
+    const pending = aicc ? `${pendingBlock()}\n\n${untrusted("aicc", aicc)}` : pendingBlock();
     const past = fresh && !resumable ? await pastBlock(last.content, conversationId) : "";
     const system = systemPrompt("chief_of_staff", [...contextBlocks(last.content), pending, past]);
     const call = (resume: ConversationRow | undefined) => runLlm({

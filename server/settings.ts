@@ -135,6 +135,7 @@ const GROUPS: GroupDef[] = [
         options: [{ value: "browser", label: "Prohlížeč (zdarma)" }, { value: "openai", label: "Čtení odpovědí hlasem OpenAI" }, { value: "realtime", label: "Plný rozhovor (OpenAI Realtime)" }],
         help: "OpenAI režimy vyžadují OpenAI API klíč (skupina Mozek).",
       },
+      { key: "APEX_VOICE_PAUSE_S", label: "Pauza před odesláním diktování (s)", type: "number", min: 1, max: 30, default: "6", help: "Jak dlouho smíš při diktování mlčet, než Apex zprávu odešle. Enter nebo klepnutí na orb odešle hned." },
       { key: "APEX_STT", label: "Rozpoznávání řeči", type: "select", default: "browser", options: [{ value: "browser", label: "Prohlížeč" }, { value: "openai", label: "OpenAI přepis" }] },
       {
         key: "APEX_TTS", label: "Hlas odpovědí", type: "select", default: "auto",
@@ -205,6 +206,36 @@ const GROUPS: GroupDef[] = [
       { key: "LINKEDIN_VERSION", label: "LinkedIn – verze API", type: "text", default: "202409", pattern: { re: /^\d{6}$/, hint: "Verze ve tvaru RRRRMM, např. 202409." } },
     ],
     actions: [{ id: "test-social", label: "Ověřit tokeny", test: "social" }],
+  },
+  {
+    id: "messages",
+    title: "Zprávy",
+    description: "Apex čte (nikdy neposílá) tvoje chaty. WhatsApp a Messenger z Ramboxu přes lokální bridge; iMessage/SMS z databáze na tomto Macu (serveru dej Plný přístup k disku); Instagram DM přes token stránky ze Sociálních sítí.",
+    links: [
+      { label: "WhatsApp pro Mac", url: "https://www.whatsapp.com/download" },
+      { label: "Plný přístup k disku (Nastavení systému)", url: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" },
+    ],
+    fields: [
+      { key: "APEX_MSG_RAMBOX", label: "Číst WhatsApp a Messenger z Ramboxu", type: "bool", default: "1", help: "Rambox musí běžet přes Apex bridge (npm run rambox, nebo automaticky po přihlášení). Bez bridge se použije WhatsApp pro Mac / token stránky." },
+      { key: "APEX_MSG_ARCHIVE", label: "Pamatovat si zprávy (archiv)", type: "bool", default: "1", help: "Každých 10 minut uloží nové zprávy z WhatsAppu a Messengeru v Ramboxu do paměti Apexu, aby věděl, co se s kým psalo, i když Rambox neběží." },
+      { key: "APEX_MSG_WHATSAPP", label: "Číst WhatsApp", type: "bool", default: "1", help: "Z Ramboxu přes bridge, jinak z aplikace WhatsApp pro Mac." },
+      { key: "APEX_WHATSAPP_DB", label: "WhatsApp – cesta k databázi", type: "text", placeholder: "~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite", help: "Nech prázdné pro výchozí umístění." },
+      { key: "APEX_MSG_IMESSAGE", label: "Číst iMessage / SMS", type: "bool", default: "1" },
+      { key: "APEX_MSG_MESSENGER", label: "Číst Messenger", type: "bool", default: "1", help: "Z Ramboxu přes bridge (při čtení jiného vlákna se Messenger v Ramboxu na chvilku přepne), jinak přes token stránky s oprávněním pages_messaging." },
+      { key: "APEX_MSG_INSTAGRAM", label: "Číst Instagram DM", type: "bool", default: "1", help: "Token potřebuje oprávnění instagram_manage_messages." },
+    ],
+    actions: [{ id: "test-messages", label: "Ověřit přístup ke zprávám", test: "messages" }],
+  },
+  {
+    id: "aicc",
+    title: "AI Command Center",
+    description: "Apex sleduje okna v AI Command Center: hlásí krátce, když agent v okně dokončí práci nebo čeká na tebe, a ví, co se v projektech děje. Do okna píše jen po tvém schválení.",
+    links: [],
+    fields: [
+      { key: "APEX_AICC", label: "Sledovat okna AI Command Center", type: "bool", default: "1" },
+      { key: "APEX_AICC_TOAST", label: "Oznámení změn v Apexu", type: "bool", default: "1", help: "Krátká bublina vpravo dole, když okno dokončí práci nebo čeká na tebe." },
+    ],
+    actions: [{ id: "test-aicc", label: "Ověřit spojení", test: "aicc" }],
   },
   {
     id: "vault",

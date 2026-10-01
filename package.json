@@ -8,7 +8,10 @@
     "dev": "next dev -H 127.0.0.1",
     "build": "next build",
     "start": "next start -H 127.0.0.1",
-    "lint": "next lint"
+    "lint": "next lint",
+    "rambox": "node lib/rambox/rambox-bridge.mjs",
+    "rambox:install": "node lib/rambox/install-launch-agent.mjs",
+    "rambox:uninstall": "node lib/rambox/install-launch-agent.mjs --remove"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

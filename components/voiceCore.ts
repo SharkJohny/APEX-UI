@@ -110,6 +110,11 @@ export class EnergyVad {
     };
   }
 
+  /* How long the speaker has been quiet (0 while talking or before speech). */
+  silentFor(t: number): number {
+    return this.speaking ? Math.max(0, t - this.lastLoud) : 0;
+  }
+
   threshold(): number {
     return Math.max(this.o.minThreshold, (this.floor ?? 0) * this.o.ratio);
   }

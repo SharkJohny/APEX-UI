@@ -220,6 +220,47 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE conversations ADD COLUMN ctx_tokens INTEGER NOT NULL DEFAULT 0;
   `,
+  // Archive of the owner's chats (WhatsApp / Messenger via Rambox) - Apex's
+  // memory of who wrote what. key dedupes re-synced messages.
+  `
+  CREATE TABLE chat_archive (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    chat_name TEXT NOT NULL DEFAULT '',
+    at TEXT,
+    time_label TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL,
+    me INTEGER NOT NULL DEFAULT 0,
+    text TEXT NOT NULL,
+    key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX chat_archive_chat ON chat_archive (source, chat_id, id);
+  CREATE INDEX chat_archive_name ON chat_archive (chat_name);
+  CREATE TABLE chat_sync (
+    source TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    chat_name TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (source, chat_id)
+  );
+  `,
+  // Changes in the owner's AI Command Center windows (agent finished, waits
+  // for him, roadmap step done...). chief_seen: already told to the chief.
+  `
+  CREATE TABLE aicc_events (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    terminal_id TEXT NOT NULL DEFAULT '',
+    win TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    chief_seen INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 function migrate(db: DatabaseSync) {

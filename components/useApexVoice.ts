@@ -22,7 +22,7 @@ export type SttMode = "browser" | "openai";
 
 type ProvidersResponse = {
   providers?: ProviderInfo[]; defaultProvider?: string; tts?: TtsMode;
-  voiceMode?: VoiceMode; stt?: SttMode; realtime?: boolean; hints?: string[];
+  voiceMode?: VoiceMode; stt?: SttMode; realtime?: boolean; hints?: string[]; pauseMs?: number;
 };
 
 /* One line in the dock's per-turn activity strip. Jobs update in place by id. */
@@ -58,6 +58,11 @@ function recognitionCtor(): (new () => Recognition) | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+}
+
+/* Countdown shown while the owner pauses mid-dictation. */
+function pauseHint(leftMs: number): string {
+  return `Pauza – odešlu za ${Math.max(1, Math.ceil(leftMs / 1000))} s (Enter = hned)`;
 }
 
 const MIC_DENIED = "Mikrofon není povolený - povol ho v adresním řádku prohlížeče.";
@@ -112,6 +117,8 @@ export function useApexVoice() {
   const abort = useRef<AbortController | null>(null);
   const recog = useRef<Recognition | null>(null);
   const rec = useRef<Recording | null>(null); // OpenAI STT recording in progress
+  const finishListen = useRef<(() => void) | null>(null); // send what was dictated now (tap / Enter)
+  const pauseMs = useRef(6000);           // dictation: silence before the utterance is sent (Settings › Hlas)
   const queue = useRef<string[]>([]);
   const playing = useRef<number | null>(null); // run id whose queue is being spoken
   const streamDone = useRef(true);
@@ -150,6 +157,7 @@ export function useApexVoice() {
         setStt(d.stt === "openai" ? "openai" : "browser");
         setRealtimeAvailable(!!d.realtime);
         setVoiceHints(d.hints || []);
+        if (d.pauseMs) pauseMs.current = d.pauseMs;
         const current = providerRef.current;
         if (current && list.some((p) => p.id === current)) return;
         const saved = load(PROVIDER_KEY);
@@ -316,6 +324,7 @@ export function useApexVoice() {
     recog.current = null;
     rec.current?.finish(false);
     rec.current = null;
+    finishListen.current = null;
     setInterim("");
   }, []);
 
@@ -579,8 +588,10 @@ export function useApexVoice() {
     analyser.fftSize = 1024;
     ctx.createMediaStreamSource(stream).connect(analyser);
     const frame = new Float32Array(analyser.fftSize);
-    const vad = new EnergyVad();
+    // a long pause is fine - people stop to think mid-sentence; Enter / tap sends at once
+    const vad = new EnergyVad({ silenceMs: pauseMs.current, maxMs: 180_000 });
     let timer: ReturnType<typeof setInterval> | null = null;
+    let hint = "";
 
     const release = () => {
       stream.getTracks().forEach((t) => t.stop());
@@ -604,10 +615,17 @@ export function useApexVoice() {
       },
     };
     rec.current = recording;
+    finishListen.current = () => recording.finish(true);
     timer = setInterval(() => {
       analyser.getFloatTimeDomainData(frame);
-      const ev = vad.feed(rms(frame), performance.now());
-      if (ev === "speech-start") { listenFails.current = 0; setInterim("Nahrávám…"); }
+      const now = performance.now();
+      const ev = vad.feed(rms(frame), now);
+      if (ev === null && vad.speaking) {
+        const quiet = vad.silentFor(now);
+        const next = quiet >= 1000 ? pauseHint(pauseMs.current - quiet) : "Nahrávám… (Enter = odeslat)";
+        if (next !== hint) { hint = next; setInterim(next); }
+      }
+      if (ev === "speech-start") { listenFails.current = 0; hint = "Nahrávám… (Enter = odeslat)"; setInterim(hint); }
       else if (ev === "speech-end" || ev === "max-length") { setInterim(""); recording.finish(true); }
       else if (ev === "no-speech") { recording.finish(false); if (id === run.current) setState("idle"); }
     }, 50);
@@ -619,41 +637,88 @@ export function useApexVoice() {
     if (!Ctor) { setError(NO_RECOGNITION); return; }
     stopAll();
     const id = run.current;
-    const r = new Ctor();
-    r.lang = LANG;
-    r.interimResults = true;
-    r.continuous = false;
+    // Chrome ends a recognition on its own after a short pause; keep reopening it
+    // until the owner has been quiet for pauseMs (or presses Enter / taps).
     let finalText = "";
-    r.onresult = (e) => {
-      listenFails.current = 0;
-      let live = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const res = e.results[i];
-        if (res.isFinal) finalText += res[0].transcript;
-        else live += res[0].transcript;
-      }
-      if (id === run.current) setInterim((finalText + " " + live).trim());
-    };
-    r.onerror = (e) => {
+    let live = "";
+    let heard = false;
+    let lastHeard = Date.now();
+    let done = false;
+    const show = () => {
       if (id !== run.current) return;
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        micDenied();
-      } else if (e.error !== "no-speech" && e.error !== "aborted") {
-        listenFails.current += 1;
-        setError(`Rozpoznávání řeči: ${e.error}`);
-      }
+      const text = `${finalText} ${live}`.trim();
+      const quiet = Date.now() - lastHeard;
+      setInterim(heard && quiet >= 1000 ? `${text}\n${pauseHint(pauseMs.current - quiet)}` : text);
     };
-    r.onend = () => {
+    const ticker = setInterval(() => {
+      if (id !== run.current || done) { clearInterval(ticker); return; }
+      show();
+      if (heard && Date.now() - lastHeard >= pauseMs.current) finish();
+    }, 250);
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(ticker);
+      try { recog.current?.stop(); } catch { /* ended */ }
+      if (!recog.current) end();
+    };
+    const end = () => {
+      clearInterval(ticker);
       if (id !== run.current) return;
       recog.current = null;
+      finishListen.current = null;
       setInterim("");
-      if (finalText.trim()) void send(finalText);
+      const text = `${finalText} ${live}`.trim();
+      if (text) void send(text);
       else setState("idle");
     };
-    recog.current = r;
+    finishListen.current = finish;
+    const start = () => {
+      const r = new Ctor();
+      r.lang = LANG;
+      r.interimResults = true;
+      r.continuous = true;
+      r.onresult = (e) => {
+        listenFails.current = 0;
+        heard = true;
+        lastHeard = Date.now();
+        live = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const res = e.results[i];
+          if (res.isFinal) finalText = `${finalText} ${res[0].transcript}`.trim();
+          else live += res[0].transcript;
+        }
+        show();
+      };
+      bind(r);
+      recog.current = r;
+      try { r.start(); } catch { end(); }
+    };
+    const bind = (r: Recognition) => {
+      r.onerror = (e) => {
+        if (id !== run.current) return;
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          done = true; // no reopening after onend
+          micDenied();
+        } else if (e.error !== "no-speech" && e.error !== "aborted") {
+          done = true;
+          listenFails.current += 1;
+          setError(`Rozpoznávání řeči: ${e.error}`);
+        }
+      };
+      r.onend = () => {
+        if (id !== run.current) { clearInterval(ticker); return; }
+        recog.current = null;
+        // unsent words stay: live text becomes final when Chrome cuts the session
+        if (live) { finalText = `${finalText} ${live}`.trim(); live = ""; }
+        const idle = Date.now() - lastHeard;
+        if (!done && (heard ? idle < pauseMs.current : idle < 8_000)) start();
+        else end();
+      };
+    };
     setError(null);
     setState("listening");
-    try { r.start(); } catch { setState("idle"); }
+    start();
   }, [stopAll, send, micDenied]);
 
   const listen = useCallback(() => {
@@ -674,13 +739,29 @@ export function useApexVoice() {
       return;
     }
     if (state === "listening") {
-      if (rec.current) rec.current.finish(true);
+      if (finishListen.current) finishListen.current();
+      else if (rec.current) rec.current.finish(true);
       else { try { recog.current?.stop(); } catch { /* ended */ } }
       return;
     }
     if (!canListen) { setError(stt === "openai" ? "Tenhle prohlížeč neumí nahrávat zvuk - piš do pole dole." : NO_RECOGNITION); return; }
     listen();
   }, [voiceMode, rtOn, rtStop, caps.rtc, stopAll, rtStart, state, canListen, stt, listen]);
+
+  /* Enter sends the dictation right away (unless the owner is typing text). */
+  useEffect(() => {
+    if (state !== "listening") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+      const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && el.value.trim()) return;
+      if (!finishListen.current) return;
+      e.preventDefault();
+      finishListen.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [state]);
 
   const stop = useCallback(() => {
     if (rtOn) rtStop("user");

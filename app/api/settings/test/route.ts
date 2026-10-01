@@ -4,6 +4,8 @@ import { raqetoConfigured, raqetoPing } from "@/server/integrations/raqeto";
 import { googleStatus } from "@/server/integrations/google";
 import { resetSocialVerify, socialStatus, verifySocial } from "@/server/integrations/social";
 import { vaultStatus } from "@/server/vault";
+import { listChats, messagesStatus } from "@/server/integrations/messages";
+import { listTerminals } from "@/server/integrations/aicc";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -122,9 +124,38 @@ function testVault(): Result {
   return { ok: true, message: `Trezor ${s.path}: ${s.notes ?? 0} poznámek.` };
 }
 
+async function testMessages(): Promise<Result> {
+  const s = messagesStatus();
+  const NAMES = { whatsapp: "WhatsApp", imessage: "iMessage", messenger: "Messenger", instagram: "Instagram" } as const;
+  const parts: string[] = [];
+  let ok = false;
+  for (const k of Object.keys(s) as (keyof typeof s)[]) {
+    if (!s[k].enabled) continue;
+    let st = s[k];
+    if (st.ok && k !== "imessage") {
+      // a real read: the bridge / token may be configured but not working
+      const r = await listChats({ source: k, limit: 1 }).catch((e) => ({ errors: [String(e?.message || e)] }));
+      st = r.errors.length ? { ...st, ok: false, note: r.errors[0] } : { ...st, note: st.note.replace(/ \(.*\)$/, "") + " – připojeno" };
+    }
+    ok ||= st.ok;
+    parts.push(`${NAMES[k]}: ${st.ok ? "OK" : "✗"} – ${st.note}`);
+  }
+  return { ok, message: parts.length ? parts.join(" · ") : "Všechny zdroje zpráv jsou vypnuté." };
+}
+
+async function testAicc(): Promise<Result> {
+  try {
+    const t = await listTerminals();
+    const projects = new Set(t.map((x) => x.projectName)).size;
+    return { ok: true, message: `AI Command Center připojen – ${t.length} oken v ${projects} projektech.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 const TESTS: Record<string, () => Result | Promise<Result>> = {
   openai: testOpenAi, anthropic: testAnthropic, elevenlabs: testElevenLabs, raqeto: testRaqeto,
-  google: testGoogle, social: testSocial, vault: testVault,
+  google: testGoogle, social: testSocial, vault: testVault, messages: testMessages, aicc: testAicc,
 };
 
 export async function POST(request: Request) {

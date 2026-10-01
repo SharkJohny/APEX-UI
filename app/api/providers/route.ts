@@ -24,5 +24,7 @@ export async function GET(request: Request) {
     stt: stt.stt,
     realtime: hasOpenAiKey(),
     hints: [tts.hint, stt.hint].filter(Boolean),
+    // dictation: silence (ms) before the utterance is sent
+    pauseMs: Math.round(Math.min(30, Math.max(1, Number(process.env.APEX_VOICE_PAUSE_S) || 6)) * 1000),
   });
 }

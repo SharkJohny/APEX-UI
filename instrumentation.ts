@@ -17,6 +17,10 @@ export async function register() {
       startSemanticIndexer();
       const { startRaqetoQueue } = await import("./server/raqetoQueue");
       startRaqetoQueue();
+      const { startChatSync } = await import("./server/chatSync");
+      startChatSync();
+      const { startAiccWatch } = await import("./server/aiccWatch");
+      startAiccWatch();
     } catch (e) {
       console.error("[apex] scheduler start failed:", e);
     }

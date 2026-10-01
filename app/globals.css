@@ -368,3 +368,25 @@ body {
 @keyframes apop-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes apop-rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .apop-backdrop, .apop, .apop-toast { animation: none; } }
+
+/* AI Command Center notifications (ApexAiccToasts) */
+.aicc-toasts {
+  position: fixed; top: 16px; right: 16px; z-index: 85; display: flex; flex-direction: column; gap: 8px;
+  max-width: min(380px, calc(100vw - 32px));
+}
+.aicc-toast {
+  display: flex; align-items: flex-start; gap: 8px; padding: 9px 8px 9px 12px;
+  background: rgba(6, 13, 24, 0.94); backdrop-filter: blur(14px);
+  border: 1px solid rgba(13, 210, 255, 0.45); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); color: #e8f6ff; font-size: 12.5px; line-height: 1.4;
+  animation: apop-rise 0.18s ease-out;
+}
+.aicc-attention { border-color: rgba(245, 166, 35, 0.55); }
+.aicc-dot { width: 7px; height: 7px; flex: none; margin-top: 5px; border-radius: 50%; background: #0dd2ff; box-shadow: 0 0 8px #0dd2ff; }
+.aicc-attention .aicc-dot { background: #f5a623; box-shadow: 0 0 8px #f5a623; }
+.aicc-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.aicc-text b { font-weight: 600; color: #fff; }
+.aicc-x { flex: none; background: none; border: none; color: rgba(240, 237, 232, 0.6); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; }
+.aicc-x:hover { color: #fff; }
+.aicc-x:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { .aicc-toast { animation: none; } }

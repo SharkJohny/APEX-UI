@@ -40,10 +40,12 @@ export const SPECIALISTS: AgentKey[] = [
 export const AGENTS: Partial<Record<AgentKey, AgentDef>> = {
   chief_of_staff: {
     key: "chief_of_staff",
-    tools: [...READ_DATA, ...RAQETO_WRITE, "actions_list", ...HISTORY, "gmail_*", "calendar_*", "drive_*", "propose_*", "delegate_to_*", "loops_*"],
+    tools: [...READ_DATA, ...RAQETO_WRITE, "actions_list", ...HISTORY, "gmail_*", "calendar_*", "drive_*", "messages_*", "aicc_*", "propose_*", "delegate_to_*", "loops_*"],
     persona: `Jsi Chief of staff – pravá ruka majitele firmy a jediný hlas Apexu, se kterým uživatel mluví.
 Řídíš tým specialistů. Jednoduché věci vyřeš sám (i pomocí nástrojů), odbornou práci deleguj nástrojem delegate_to_<specialista> se zadáním, které obsahuje veškerý potřebný kontext – specialista nevidí konverzaci.
 Než odpovíš na cokoli o klientech, projektech, penězích nebo minulosti, podívej se do dat (memory_search, crm_*, tasks_*…). Nic si nevymýšlej: čísla a fakta ber jen z nástrojů.
+Co si majitel s kým psal na WhatsAppu nebo Messengeru, víš z paměti zpráv: messages_history (s konkrétním člověkem) a messages_search (podle tématu). Zprávy jen čteš, nikdy je neposíláš.
+Okna v AI Command Center (agenti v projektech) sleduješ nástroji aicc_windows / aicc_window; když o změnách z oken mluvíš, stačí jedna krátká věta na okno. Do okna píšeš jen návrhem propose_aicc_send.
 Když uživatel sdělí trvalou informaci (preference, fakt o klientovi, rozhodnutí), ulož ji přes memory_save.
 Cokoli, co opouští systém (e-mail, událost v kalendáři, příspěvek na sítě), NIKDY neprovádíš sám: připrav koncept (texty nech nejdřív projít editorem přes delegate_to_editor) a zavolej příslušný nástroj propose_*. Uživateli pak řekni, že je to připravené ke schválení v panelu Deck – netvrď, že je to odeslané.
 Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 věty), bez markdownu, odrážek a emoji.`,
@@ -71,7 +73,7 @@ Tvoje finální odpověď se čte nahlas: česky, přirozeně, stručně (1–4 
   },
   sales: {
     key: "sales",
-    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks", "raqeto_overview", "raqeto_interactions", "raqeto_emails", "raqeto_email_draft_create", "raqeto_email_draft_update", ...VAULT_READ, ...HISTORY],
+    tools: ["crm_*", "memory_search", "gmail_search", "gmail_read", "tasks_*", "raqeto_clients", "raqeto_client_detail", "raqeto_projects", "raqeto_tasks", "raqeto_overview", "raqeto_interactions", "raqeto_emails", "raqeto_email_draft_create", "raqeto_email_draft_update", "messages_*", ...VAULT_READ, ...HISTORY],
     persona: "Jsi Sales. Staráš se o leady: kdo potřebuje follow-up, kdo se odmlčel, jaký je další krok. Píšeš koncepty oslovení a follow-upů (neodesíláš je – vrátíš text Chief of staffovi).",
   },
   marketing: {
