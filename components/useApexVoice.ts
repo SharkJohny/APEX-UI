@@ -533,7 +533,7 @@ export function useApexVoice() {
       else setError("Realtime hovor ještě není spojený.");
       return;
     }
-    if (!provider) { setError("Není vybraný žádný poskytovatel AI."); return; }
+    if (!providerRef.current) { setError("Není vybraný žádný poskytovatel AI."); return; }
     stopAll();
     const id = run.current;
     const history: ChatMessage[] = [...messagesRef.current, { role: "user", content }];
@@ -591,7 +591,12 @@ export function useApexVoice() {
     setPartial("");
     if (failure) setError(failure);
     finishIfDone(id);
-  }, [provider, stopAll, enqueue, finishIfDone, streamChat, pushMessage, rtOn, rtSendText]);
+  }, [stopAll, enqueue, finishIfDone, streamChat, pushMessage, rtOn, rtSendText]);
+  // A listening session can outlive many renders (hands-free waits for the
+  // call for minutes, often started before /api/providers answered), so it
+  // sends through the ref - never through the send it was opened with.
+  const sendRef = useRef(send);
+  sendRef.current = send;
 
   /* ── listening ── */
   const micDenied = useCallback(() => {
@@ -618,7 +623,7 @@ export function useApexVoice() {
       setInterim("");
       if (!res.ok) { listenFails.current += 1; setError(data.error || `Přepis řeči selhal (HTTP ${res.status}).`); setState("idle"); return; }
       listenFails.current = 0;
-      if (data.text?.trim()) void send(data.text);
+      if (data.text?.trim()) void sendRef.current(data.text);
       else setState("idle");
     } catch (e) {
       if (id !== run.current) return;
@@ -628,7 +633,7 @@ export function useApexVoice() {
       setError(`Přepis řeči selhal: ${e instanceof Error ? e.message : String(e)}`);
       setState("idle");
     }
-  }, [send]);
+  }, []);
 
   /* OpenAI STT: record the mic, cut the utterance with the energy VAD
    * (starts above the room level, ends after ~900 ms of silence, max 60 s),
@@ -760,7 +765,7 @@ export function useApexVoice() {
       finishListen.current = null;
       setInterim("");
       const msg = armed ? message() : "";
-      if (msg) void send(msg);
+      if (msg) void sendRef.current(msg);
       else setState("idle");
     };
     // tap / Enter: send now - or, while waiting for the call, count as the call
@@ -828,7 +833,7 @@ export function useApexVoice() {
     setState("listening");
     show();
     start();
-  }, [stopAll, send, micDenied]);
+  }, [stopAll, micDenied]);
 
   const listen = useCallback(() => {
     if (stt === "openai") void listenRecorded();
