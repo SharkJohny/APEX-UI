@@ -27,6 +27,7 @@ import ApexSettings from "./ApexSettings";
 import ApexApprovalPopup from "./ApexApprovalPopup";
 import ApexAiccToasts from "./ApexAiccToasts";
 import { useApexVoice } from "./useApexVoice";
+import { usePauseCssWhenInactive } from "./windowActive";
 import { useApexStatus, apiJson, asList, fmtTime, type AgentLive } from "./useApexStatus";
 import { ROSTER, ROSTER_BY_KEY, type AgentStatus } from "@/lib/roster";
 
@@ -248,6 +249,7 @@ export function AgentCockpit({ sel, live, refreshKey, onAsk, onClose }: {
 
 /* ── The world ── */
 export default function ApexWorld() {
+  usePauseCssWhenInactive();
   const [selected, setSelected] = useState<NodeSel | null>(null);
   const [reduced, setReduced] = useState(false);
   const [deck, setDeck] = useState<DeckSection | null>(null);

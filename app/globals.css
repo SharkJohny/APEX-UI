@@ -402,3 +402,8 @@ body {
 .dock-details-btn:focus-visible { outline: 2px solid #0dd2ff; outline-offset: 2px; border-radius: 4px; }
 .dock-details { margin-top: 4px; padding-top: 6px; border-top: 1px solid rgba(245, 166, 35, 0.2); opacity: 0.9; }
 .dock-details-hint { opacity: 0.6; font-size: 12px; }
+
+/* Window inactive (another app / tab in front): freeze CSS loops to save battery. */
+html[data-apex-inactive] *,
+html[data-apex-inactive] *::before,
+html[data-apex-inactive] *::after { animation-play-state: paused !important; }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from 'react'
+import { isWindowActive, onWindowActiveChange } from './windowActive'
 
 // Apex's reasoning web — the lean-orchestrator brain. Two modes:
 //   mode="full"  → the whole circuit-brain constellation (front / overview). Orbit rings + PCB
@@ -297,8 +298,16 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
       }
       raf = requestAnimationFrame(loop)
     }
-    raf = requestAnimationFrame(loop)
-    return () => { cancelAnimationFrame(raf); apiRef.current = null; svg.replaceChildren() }
+    // battery: stop while the window is inactive; on return skip the gap (dt is capped anyway)
+    const run = (active) => {
+      if (!active) { cancelAnimationFrame(raf); raf = 0; return }
+      if (raf) return
+      last = performance.now()
+      raf = requestAnimationFrame(loop)
+    }
+    const offActive = onWindowActiveChange(run)
+    run(isWindowActive())
+    return () => { offActive(); cancelAnimationFrame(raf); apiRef.current = null; svg.replaceChildren() }
   }, [mode, coreless, roster, anchor, viewBox, traces])
 
   useEffect(() => {

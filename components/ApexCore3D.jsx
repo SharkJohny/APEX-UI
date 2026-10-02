@@ -10,6 +10,7 @@
  */
 import React, { useRef, useMemo, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
+import { useWindowActive } from './windowActive'
 import { EffectComposer, Bloom } from '@react-three/postprocessing'
 import * as THREE from 'three'
 // Website copy: no voice pipeline here - the calm-render throttle is never engaged.
@@ -426,6 +427,8 @@ export default function ApexCore3D({ state = 'idle', variant = 'geodesic', onCli
   const st = normalizeState(state)
   const label = st === 'processing' ? 'Processing' : st === 'listening' ? 'Listening' : st === 'speaking' ? 'Speaking' : 'Standby'
   const [bgIdx, setBgIdx] = useState(2) // Grid default
+  const active = useWindowActive()            // battery: no frames while the window is inactive
+  const [glLost, setGlLost] = useState(false)
   const isParticles = variant === 'particles' // cyan-only, transparent, status moves to OrbStatusBar
 
   return (
@@ -450,9 +453,10 @@ export default function ApexCore3D({ state = 'idle', variant = 'geodesic', onCli
       <Canvas
         camera={{ position: [0, 0, 4.8], fov: 50 }}
         dpr={[1, 1.5]}
+        frameloop={active && !glLost ? 'always' : 'never'}
         gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         style={{ background: 'transparent', pointerEvents: 'none' }}
-        onCreated={({ gl, setFrameloop }) => {
+        onCreated={({ gl }) => {
           // Handle WebGL context loss so it doesn't cascade into the null-context crash. preventDefault
           // marks the context RESTORABLE (without it the loss is permanent â†’ every render throws); pause
           // the frameloop while it's gone and resume when the browser restores it.
@@ -460,11 +464,11 @@ export default function ApexCore3D({ state = 'idle', variant = 'geodesic', onCli
           canvas.addEventListener('webglcontextlost', (e) => {
             e.preventDefault()
             try { console.warn('[orb] WebGL context lost â€” pausing render') } catch {}
-            try { setFrameloop('never') } catch {}
+            setGlLost(true)
           }, false)
           canvas.addEventListener('webglcontextrestored', () => {
             try { console.warn('[orb] WebGL context restored â€” resuming') } catch {}
-            try { setFrameloop('always') } catch {}
+            setGlLost(false)
           }, false)
         }}
       >{/* canvas must NOT capture pointers â€” it sat over the reasoning web and ate every agent click.

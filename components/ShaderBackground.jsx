@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useRef } from 'react'
+import { isWindowActive, onWindowActiveChange } from './windowActive'
 // Website copy: no voice pipeline here - the calm-render throttle never engages.
 const isRenderCalm = () => false
 
@@ -245,9 +246,18 @@ export default function ShaderBackground({ opacity = 0.18, voiceActive = false, 
       rafId = requestAnimationFrame(render)
     }
 
-    rafId = requestAnimationFrame(render)
+    // battery: no frames while the window is inactive; resume without a time jump
+    const run = (active) => {
+      if (!active) { cancelAnimationFrame(rafId); rafId = 0; return }
+      if (rafId) return
+      lastFrame = Date.now()
+      rafId = requestAnimationFrame(render)
+    }
+    const offActive = onWindowActiveChange(run)
+    run(isWindowActive())
 
     return () => {
+      offActive()
       cancelAnimationFrame(rafId)
       window.removeEventListener('resize', resize)
     }
