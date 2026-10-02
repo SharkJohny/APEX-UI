@@ -45,7 +45,7 @@ const NO_KEY_TITLE = "Chybí OpenAI API klíč – otevři Nastavení";
 export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSettings }: {
   voice: Voice; pending: number; onOpenDeck: (s?: DeckSection) => void; onOpenSettings?: () => void;
 }) {
-  const { state, messages, partial, interim, error, providers, provider, setProvider, tts, muted, setMuted, canListen, handsFree, setHandsFree, send, tap, stop, reset, reasoning, activity, voiceMode, setVoiceMode, realtimeAvailable, voiceHints, realtime } = voice;
+  const { state, messages, partial, interim, error, providers, provider, setProvider, tts, muted, setMuted, canListen, handsFree, setHandsFree, wake, send, tap, stop, reset, reasoning, activity, voiceMode, setVoiceMode, realtimeAvailable, voiceHints, realtime } = voice;
   const [draft, setDraft] = useState("");
   const [switching, setSwitching] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -274,7 +274,9 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
           title={isRealtime
             ? "V režimu Realtime poslouchám průběžně po celý rozhovor."
             : canListen
-            ? (handsFree ? "Trvalé poslouchání je zapnuté – po každé odpovědi poslouchám dál. Klikni pro vypnutí." : "Trvalé poslouchání: mluv, pauzou odešli, po odpovědi poslouchám dál.")
+            ? wake
+              ? (handsFree ? "Poslouchám a čekám na oslovení – pak zapisuju a po pauze odešlu. Klikni pro vypnutí." : "Trvalé poslouchání na oslovení: reaguju, až mě oslovíš jménem.")
+              : (handsFree ? "Trvalé poslouchání je zapnuté – po každé odpovědi poslouchám dál. Klikni pro vypnutí." : "Trvalé poslouchání: mluv, pauzou odešli, po odpovědi poslouchám dál.")
             : "Prohlížeč neumí rozpoznávat řeč"}
           style={{
             ...iconBtn,

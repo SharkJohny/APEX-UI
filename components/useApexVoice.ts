@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EnergyVad, askApexOutput, collectTurn, ndjsonSplitter, pickRecorderMime, rms, voicedPart, type ApexEvent } from "./voiceCore";
+import { EnergyVad, askApexOutput, collectTurn, makeWakeMatcher, ndjsonSplitter, pickRecorderMime, rms, voicedPart, type ApexEvent } from "./voiceCore";
 import { useRealtimeVoice, type RealtimePhase } from "./useRealtimeVoice";
 
 /* The voice loop behind the orb: listen (browser speech recognition, or a
@@ -23,6 +23,7 @@ export type SttMode = "browser" | "openai";
 type ProvidersResponse = {
   providers?: ProviderInfo[]; defaultProvider?: string; tts?: TtsMode;
   voiceMode?: VoiceMode; stt?: SttMode; realtime?: boolean; hints?: string[]; pauseMs?: number;
+  wake?: boolean; wakeWords?: string[];
 };
 
 /* One line in the dock's per-turn activity strip. Jobs update in place by id. */
@@ -63,6 +64,28 @@ function recognitionCtor(): (new () => Recognition) | null {
 /* Countdown shown while the owner pauses mid-dictation. */
 function pauseHint(leftMs: number): string {
   return `Pauza – odešlu za ${Math.max(1, Math.ceil(leftMs / 1000))} s (Enter = hned)`;
+}
+
+/* Short two-note tone: "I heard you" after the wake word. */
+function playWakeTone() {
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const g = ctx.createGain();
+    g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+    [660, 880].forEach((f, i) => {
+      const o = ctx.createOscillator();
+      o.frequency.value = f;
+      o.connect(g);
+      o.start(ctx.currentTime + i * 0.12);
+      o.stop(ctx.currentTime + i * 0.12 + 0.15);
+    });
+    setTimeout(() => void ctx.close().catch(() => undefined), 600);
+  } catch { /* no audio */ }
 }
 
 const MIC_DENIED = "Mikrofon není povolený - povol ho v adresním řádku prohlížeče.";
@@ -120,6 +143,10 @@ export function useApexVoice() {
   const finishListen = useRef<(() => void) | null>(null); // send what was dictated now (tap / Enter)
   const pauseMs = useRef(6000);           // dictation: silence before the utterance is sent (Settings › Hlas)
   const configRetries = useRef(0);
+  const wakeOn = useRef(false);           // hands-free waits for the owner's call (Settings › Hlas)
+  const wakeWords = useRef<string[]>(["Apex"]);
+  const localRecognition = useRef(false); // Chrome can recognise Czech on this device - audio stays here
+  const [wake, setWake] = useState(false);
   const loadConfigRef = useRef<(() => Promise<void>) | null>(null);
   const queue = useRef<string[]>([]);
   const playing = useRef<number | null>(null); // run id whose queue is being spoken
@@ -161,6 +188,9 @@ export function useApexVoice() {
         setRealtimeAvailable(!!d.realtime);
         setVoiceHints(d.hints || []);
         if (d.pauseMs) pauseMs.current = d.pauseMs;
+        wakeOn.current = !!d.wake;
+        setWake(!!d.wake);
+        if (d.wakeWords?.length) wakeWords.current = d.wakeWords;
         const current = providerRef.current;
         if (current && list.some((p) => p.id === current)) return;
         const saved = load(PROVIDER_KEY);
@@ -177,6 +207,15 @@ export function useApexVoice() {
       });
   }, []);
   loadConfigRef.current = loadConfig;
+
+  // Newer Chrome can recognise speech on this device: then waiting for the
+  // wake word sends no room audio anywhere. Best effort - else the cloud one.
+  useEffect(() => {
+    const SR = (window as unknown as { SpeechRecognition?: { available?: (o: object) => Promise<string> } }).SpeechRecognition;
+    SR?.available?.({ langs: [LANG], processLocally: true })
+      .then((a) => { localRecognition.current = a === "available"; })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
@@ -597,7 +636,8 @@ export function useApexVoice() {
   const listenRecorded = useCallback(async () => {
     stopAll();
     const id = run.current;
-    setError(null);
+    // no setError(null) here: the hands-free loop reopens the mic right after
+    // a failure and would wipe the message before the owner can read it
     const mime = pickRecorderMime((t) => MediaRecorder.isTypeSupported(t));
     if (!mime) { setError("Prohlížeč neumí nahrávat ve formátu pro OpenAI (webm/mp4) – přepni přepis řeči na prohlížeč."); setState("idle"); return; }
     setState("listening");
@@ -665,28 +705,46 @@ export function useApexVoice() {
     recorder.start(250);
   }, [stopAll, micDenied, transcribe]);
 
-  const listenBrowser = useCallback(() => {
+  /* Chrome speech recognition. Chrome ends a session on its own after a short
+   * pause, so sessions are reopened until the owner has been quiet for pauseMs
+   * (or presses Enter / taps). The text is rebuilt from all results each time.
+   * wake: wait for the owner's call ("Apexi, …") first - everything said before
+   * it is ignored, the call itself is cut off, a short tone confirms it. */
+  const listenBrowser = useCallback((opts: { wake?: boolean } = {}) => {
     const Ctor = recognitionCtor();
     if (!Ctor) { setError(NO_RECOGNITION); return; }
     stopAll();
     const id = run.current;
-    // Chrome ends a recognition on its own after a short pause; keep reopening it
-    // until the owner has been quiet for pauseMs (or presses Enter / taps).
-    let finalText = "";
-    let live = "";
+    const findWake = opts.wake ? makeWakeMatcher(wakeWords.current) : null;
+    let armed = !findWake;
+    let before = "";        // text of earlier sessions
+    let session = "";       // text of the current session
+    let from = 0;           // where the message starts (after the call)
     let heard = false;
     let lastHeard = Date.now();
     let done = false;
+    const text = () => `${before} ${session}`.trim();
+    const message = () => text().slice(from).trim();
     const show = () => {
       if (id !== run.current) return;
-      const text = `${finalText} ${live}`.trim();
+      if (!armed) { setInterim(`Čekám na oslovení „${wakeWords.current[0] ?? "Apex"}“…`); return; }
       const quiet = Date.now() - lastHeard;
-      setInterim(heard && quiet >= 1000 ? `${text}\n${pauseHint(pauseMs.current - quiet)}` : text);
+      const msg = message();
+      setInterim(heard && quiet >= 1000 ? `${msg || "Poslouchám…"}\n${pauseHint(pauseMs.current - quiet)}` : msg || "Poslouchám…");
     };
     const ticker = setInterval(() => {
       if (id !== run.current || done) { clearInterval(ticker); return; }
       show();
-      if (heard && Date.now() - lastHeard >= pauseMs.current) finish();
+      if (armed && Date.now() - lastHeard >= pauseMs.current) {
+        // called but said nothing more: go back to waiting, in a fresh session
+        // so the old call in this session's results can't trigger again
+        if (findWake && !message()) {
+          armed = false; before = ""; session = ""; from = 0; heard = false;
+          try { recog.current?.abort(); } catch { /* ended */ }
+          return;
+        }
+        if (heard || !findWake) finish();
+      }
     }, 250);
     const finish = () => {
       if (done) return;
@@ -701,26 +759,41 @@ export function useApexVoice() {
       recog.current = null;
       finishListen.current = null;
       setInterim("");
-      const text = `${finalText} ${live}`.trim();
-      if (text) void send(text);
+      const msg = armed ? message() : "";
+      if (msg) void send(msg);
       else setState("idle");
     };
-    finishListen.current = finish;
+    // tap / Enter: send now - or, while waiting for the call, count as the call
+    finishListen.current = () => {
+      if (armed) { finish(); return; }
+      armed = true;
+      from = text().length;
+      heard = false;
+      lastHeard = Date.now();
+      playWakeTone();
+      show();
+    };
     const start = () => {
       const r = new Ctor();
       r.lang = LANG;
       r.interimResults = true;
       r.continuous = true;
+      if (localRecognition.current) (r as Recognition & { processLocally?: boolean }).processLocally = true;
       r.onresult = (e) => {
         listenFails.current = 0;
+        let all = "";
+        for (let i = 0; i < e.results.length; i++) all += e.results[i][0].transcript;
+        session = all.trim();
+        if (!armed && findWake) {
+          const full = text();
+          const at = findWake(full);
+          if (at < 0) return;
+          armed = true;
+          from = at;
+          playWakeTone();
+        }
         heard = true;
         lastHeard = Date.now();
-        live = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const res = e.results[i];
-          if (res.isFinal) finalText = `${finalText} ${res[0].transcript}`.trim();
-          else live += res[0].transcript;
-        }
         show();
       };
       bind(r);
@@ -736,21 +809,24 @@ export function useApexVoice() {
         } else if (e.error !== "no-speech" && e.error !== "aborted") {
           done = true;
           listenFails.current += 1;
+          console.warn("[apex] speech recognition error", e);
           setError(`Rozpoznávání řeči: ${e.error}`);
         }
       };
       r.onend = () => {
         if (id !== run.current) { clearInterval(ticker); return; }
         recog.current = null;
-        // unsent words stay: live text becomes final when Chrome cuts the session
-        if (live) { finalText = `${finalText} ${live}`.trim(); live = ""; }
+        // the session's words stay; while waiting for the call keep only a short tail
+        if (armed) { before = text(); }
+        else { const t = text(); before = t.slice(-60); from = 0; }
+        session = "";
         const idle = Date.now() - lastHeard;
-        if (!done && (heard ? idle < pauseMs.current : idle < 8_000)) start();
+        if (!done && (!armed || (heard ? idle < pauseMs.current : idle < 8_000))) start();
         else end();
       };
     };
-    setError(null);
     setState("listening");
+    show();
     start();
   }, [stopAll, send, micDenied]);
 
@@ -758,6 +834,14 @@ export function useApexVoice() {
     if (stt === "openai") void listenRecorded();
     else listenBrowser();
   }, [stt, listenRecorded, listenBrowser]);
+
+  /* Hands-free: with the wake word on, wait for the call (Chrome recognition,
+   * whatever the dictation engine) - an always-open recorder would upload all
+   * room sound to OpenAI. */
+  const listenHandsFree = useCallback(() => {
+    if (wakeOn.current && caps.recognition) listenBrowser({ wake: true });
+    else listen();
+  }, [listen, listenBrowser, caps.recognition]);
 
   /* The orb's single tap: idle → listen; listening → finish listening;
    * thinking / speaking → interrupt and listen (barge-in). In realtime mode
@@ -778,6 +862,7 @@ export function useApexVoice() {
       return;
     }
     if (!canListen) { setError(stt === "openai" ? "Tenhle prohlížeč neumí nahrávat zvuk - piš do pole dole." : NO_RECOGNITION); return; }
+    setError(null);
     listen();
   }, [voiceMode, rtOn, rtStop, caps.rtc, stopAll, rtStart, state, canListen, stt, listen]);
 
@@ -808,14 +893,15 @@ export function useApexVoice() {
     setHandsFreeState(on);
     save(HANDS_FREE_KEY, on ? "1" : "0");
     listenFails.current = 0;
+    if (on) setError(null);
     if (voiceMode === "realtime") return; // the call is continuous anyway
     if (on) {
-      if (state === "idle" && canListen) listen();
+      if (state === "idle" && canListen) listenHandsFree();
     } else if (state === "listening") {
       stopAll();
       setState("idle");
     }
-  }, [voiceMode, state, canListen, listen, stopAll]);
+  }, [voiceMode, state, canListen, listenHandsFree, stopAll]);
 
   // Hands-free loop: whenever Apex is idle (answer spoken, silence timed out,
   // error handled) and the tab is visible, open the mic again.
@@ -823,8 +909,9 @@ export function useApexVoice() {
     if (relisten.current) { clearTimeout(relisten.current); relisten.current = null; }
     if (!handsFree || state !== "idle" || voiceMode === "realtime" || !canListen) return;
     const reopen = () => {
-      if (!handsFreeRef.current || document.hidden) return;
-      listen();
+      // waiting for the call works with Apex in the background too (that's the point)
+      if (!handsFreeRef.current || (document.hidden && !wakeOn.current)) return;
+      listenHandsFree();
     };
     // short pause so the tail of Apex's own voice isn't picked up; longer after errors
     const delay = Math.min(8000, 400 * 2 ** listenFails.current);
@@ -835,7 +922,7 @@ export function useApexVoice() {
       if (relisten.current) { clearTimeout(relisten.current); relisten.current = null; }
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [handsFree, state, voiceMode, canListen, listen]);
+  }, [handsFree, state, voiceMode, canListen, listenHandsFree]);
 
   /* Dock mode switch: persists APEX_VOICE_MODE through the Settings API. */
   const setVoiceMode = useCallback(async (mode: VoiceMode) => {
@@ -875,7 +962,7 @@ export function useApexVoice() {
   return {
     state, messages, partial, interim, error, setError,
     providers, provider, setProvider, tts, muted, setMuted, canListen,
-    handsFree, setHandsFree,
+    handsFree, setHandsFree, wake,
     send, tap, stop, reset,
     webState, reasoning, trace, activity, conversationId, dataVersion, newActions,
     voiceMode, setVoiceMode, stt, realtimeAvailable, voiceHints, refreshVoiceConfig: loadConfig,

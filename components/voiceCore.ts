@@ -182,3 +182,21 @@ export function pickRecorderMime(isSupported: (t: string) => boolean): string | 
   }
   return null;
 }
+
+/* ── wake word ──
+ * Finds the owner's call ("Apexi, …") in a transcript, ignoring case and
+ * diacritics and allowing a short Czech ending (Apex / Apexi / Apexe).
+ * Returns the index right after the call (its comma etc. skipped), or -1. */
+const fold = (s: string) => [...s].map((c) => c.normalize("NFD")[0].toLowerCase()).join("");
+
+export function makeWakeMatcher(words: string[]): (text: string) => number {
+  const alts = words.map((w) => fold(w.trim())).filter((w) => w.length >= 2)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"));
+  if (!alts.length) return () => -1;
+  const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])(?:${alts.join("|")})\\p{L}{0,2}(?![\\p{L}\\p{N}])[\\s,.!?:;-]*`, "u");
+  return (text: string) => {
+    // fold() keeps one char per char, so indexes map back to the original text
+    const m = re.exec([...text].length === text.length ? fold(text) : text.toLowerCase());
+    return m ? m.index + m[0].length : -1;
+  };
+}

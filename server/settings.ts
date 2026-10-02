@@ -135,6 +135,8 @@ const GROUPS: GroupDef[] = [
         options: [{ value: "browser", label: "Prohlížeč (zdarma)" }, { value: "openai", label: "Čtení odpovědí hlasem OpenAI" }, { value: "realtime", label: "Plný rozhovor (OpenAI Realtime)" }],
         help: "OpenAI režimy vyžadují OpenAI API klíč (skupina Mozek).",
       },
+      { key: "APEX_WAKE", label: "Trvalé poslouchání čeká na oslovení", type: "bool", default: "0", help: "Ucho v chatu pak poslouchá pořád, ale reaguje, až uslyší oslovení (pípnutí), a teprve potom zapisuje. Používá rozpoznávání řeči v Chrome." },
+      { key: "APEX_WAKE_WORDS", label: "Oslovení", type: "text", default: "Apex", placeholder: "Apex, Jarvis", help: "Jedno nebo víc jmen oddělených čárkou. Koncovky (Apexi, Apexe) a diakritika nevadí." },
       { key: "APEX_VOICE_PAUSE_S", label: "Pauza před odesláním diktování (s)", type: "number", min: 1, max: 30, default: "6", help: "Jak dlouho smíš při diktování mlčet, než Apex zprávu odešle. Enter nebo klepnutí na orb odešle hned." },
       { key: "APEX_STT", label: "Rozpoznávání řeči", type: "select", default: "browser", options: [{ value: "browser", label: "Prohlížeč" }, { value: "openai", label: "OpenAI přepis" }] },
       {

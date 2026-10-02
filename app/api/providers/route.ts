@@ -25,6 +25,9 @@ export async function GET(request: Request) {
     realtime: hasOpenAiKey(),
     hints: [tts.hint, stt.hint].filter(Boolean),
     // dictation: silence (ms) before the utterance is sent
+    // hands-free waits for the owner's call
+    wake: process.env.APEX_WAKE === "1",
+    wakeWords: (process.env.APEX_WAKE_WORDS || "Apex").split(",").map((w) => w.trim()).filter(Boolean).slice(0, 8),
     pauseMs: Math.round(Math.min(30, Math.max(1, Number(process.env.APEX_VOICE_PAUSE_S) || 6)) * 1000),
   });
 }
