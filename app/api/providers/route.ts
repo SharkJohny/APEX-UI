@@ -28,6 +28,9 @@ export async function GET(request: Request) {
     // hands-free waits for the owner's call
     wake: process.env.APEX_WAKE === "1",
     wakeWords: (process.env.APEX_WAKE_WORDS || "Apex").split(",").map((w) => w.trim()).filter(Boolean).slice(0, 8),
+    // after an answer the owner may go on without the call; this word sends at once
+    followUpMs: Math.round(Math.min(120, Math.max(0, Number(process.env.APEX_FOLLOWUP_S ?? 30) || 0)) * 1000),
+    sendWords: (process.env.APEX_SEND_WORDS ?? "tečka").split(",").map((w) => w.trim()).filter(Boolean).slice(0, 8),
     pauseMs: Math.round(Math.min(30, Math.max(1, Number(process.env.APEX_VOICE_PAUSE_S) || 6)) * 1000),
   });
 }

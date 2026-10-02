@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EnergyVad, askApexOutput, collectTurn, makeWakeMatcher, ndjsonSplitter, pickRecorderMime, rms, voicedPart, type ApexEvent } from "./voiceCore";
+import { EnergyVad, askApexOutput, collectTurn, makeSendWordMatcher, makeWakeMatcher, ndjsonSplitter, pickRecorderMime, rms, stripLeadingCall, voicedPart, type ApexEvent } from "./voiceCore";
 import { useRealtimeVoice, type RealtimePhase } from "./useRealtimeVoice";
 
 /* The voice loop behind the orb: listen (browser speech recognition, or a
@@ -23,7 +23,7 @@ export type SttMode = "browser" | "openai";
 type ProvidersResponse = {
   providers?: ProviderInfo[]; defaultProvider?: string; tts?: TtsMode;
   voiceMode?: VoiceMode; stt?: SttMode; realtime?: boolean; hints?: string[]; pauseMs?: number;
-  wake?: boolean; wakeWords?: string[];
+  wake?: boolean; wakeWords?: string[]; followUpMs?: number; sendWords?: string[];
 };
 
 /* One line in the dock's per-turn activity strip. Jobs update in place by id. */
@@ -143,6 +143,9 @@ export function useApexVoice() {
   const finishListen = useRef<(() => void) | null>(null); // send what was dictated now (tap / Enter)
   const pauseMs = useRef(6000);           // dictation: silence before the utterance is sent (Settings › Hlas)
   const configRetries = useRef(0);
+  const followUpMs = useRef(30_000);      // after an answer: listen without the call this long
+  const followUpUntil = useRef(0);        // ...until this time (set when an answer finishes)
+  const sendWords = useRef<string[]>(["tečka"]); // said at the end of dictation: send at once
   const wakeOn = useRef(false);           // hands-free waits for the owner's call (Settings › Hlas)
   const wakeWords = useRef<string[]>(["Apex"]);
   const localRecognition = useRef(false); // Chrome can recognise Czech on this device - audio stays here
@@ -191,6 +194,8 @@ export function useApexVoice() {
         wakeOn.current = !!d.wake;
         setWake(!!d.wake);
         if (d.wakeWords?.length) wakeWords.current = d.wakeWords;
+        followUpMs.current = d.followUpMs ?? 30_000;
+        sendWords.current = d.sendWords ?? ["tečka"];
         const current = providerRef.current;
         if (current && list.some((p) => p.id === current)) return;
         const saved = load(PROVIDER_KEY);
@@ -247,7 +252,9 @@ export function useApexVoice() {
 
   /* ── speaking ── */
   const finishIfDone = useCallback((id: number) => {
-    if (id === run.current && streamDone.current && playing.current !== id && queue.current.length === 0) setState("idle");
+    if (id !== run.current || !streamDone.current || playing.current === id || queue.current.length) return;
+    followUpUntil.current = followUpMs.current ? Date.now() + followUpMs.current : 0;
+    setState("idle");
   }, []);
 
   const speakBrowser = useCallback((text: string, id: number): Promise<void> => {
@@ -534,6 +541,7 @@ export function useApexVoice() {
       return;
     }
     if (!providerRef.current) { setError("Není vybraný žádný poskytovatel AI."); return; }
+    followUpUntil.current = 0;
     stopAll();
     const id = run.current;
     const history: ChatMessage[] = [...messagesRef.current, { role: "user", content }];
@@ -623,7 +631,10 @@ export function useApexVoice() {
       setInterim("");
       if (!res.ok) { listenFails.current += 1; setError(data.error || `Přepis řeči selhal (HTTP ${res.status}).`); setState("idle"); return; }
       listenFails.current = 0;
-      if (data.text?.trim()) void sendRef.current(data.text);
+      const said = data.text?.trim() ?? "";
+      const cut = makeSendWordMatcher(sendWords.current)(said);
+      const msg = cut >= 0 ? said.slice(0, cut).trim() : said;
+      if (msg) void sendRef.current(msg);
       else setState("idle");
     } catch (e) {
       if (id !== run.current) return;
@@ -714,14 +725,19 @@ export function useApexVoice() {
    * pause, so sessions are reopened until the owner has been quiet for pauseMs
    * (or presses Enter / taps). The text is rebuilt from all results each time.
    * wake: wait for the owner's call ("Apexi, …") first - everything said before
-   * it is ignored, the call itself is cut off, a short tone confirms it. */
-  const listenBrowser = useCallback((opts: { wake?: boolean } = {}) => {
+   * it is ignored, the call itself is cut off, a short tone confirms it.
+   * followUpMs: right after an answer, listen without the call this long first.
+   * A send word ("tečka") at the end sends at once. */
+  const listenBrowser = useCallback((opts: { wake?: boolean; followUpMs?: number } = {}) => {
     const Ctor = recognitionCtor();
     if (!Ctor) { setError(NO_RECOGNITION); return; }
     stopAll();
     const id = run.current;
     const findWake = opts.wake ? makeWakeMatcher(wakeWords.current) : null;
-    let armed = !findWake;
+    const findSendWord = makeSendWordMatcher(sendWords.current);
+    let followUntil = findWake && opts.followUpMs ? Date.now() + opts.followUpMs : 0;
+    const following = () => followUntil > Date.now();
+    let armed = !findWake || following();
     let before = "";        // text of earlier sessions
     let session = "";       // text of the current session
     let from = 0;           // where the message starts (after the call)
@@ -730,21 +746,36 @@ export function useApexVoice() {
     let done = false;
     const text = () => `${before} ${session}`.trim();
     const message = () => text().slice(from).trim();
+    // what gets sent: no send word, no call said out of habit during follow-up
+    const outgoing = () => {
+      let msg = message();
+      const cut = findSendWord(msg);
+      if (cut >= 0) msg = msg.slice(0, cut).trim();
+      return findWake ? stripLeadingCall(msg, findWake) : msg;
+    };
     const show = () => {
       if (id !== run.current) return;
       if (!armed) { setInterim(`Čekám na oslovení „${wakeWords.current[0] ?? "Apex"}“…`); return; }
       const quiet = Date.now() - lastHeard;
       const msg = message();
+      if (!msg && following()) {
+        setInterim(`Poslouchám – mluv rovnou, bez oslovení (ještě ${Math.ceil((followUntil - Date.now()) / 1000)} s)`);
+        return;
+      }
       setInterim(heard && quiet >= 1000 ? `${msg || "Poslouchám…"}\n${pauseHint(pauseMs.current - quiet)}` : msg || "Poslouchám…");
     };
     const ticker = setInterval(() => {
       if (id !== run.current || done) { clearInterval(ticker); return; }
       show();
-      if (armed && Date.now() - lastHeard >= pauseMs.current) {
+      const quiet = Date.now() - lastHeard;
+      // "…tečka": send once the word has stood for a moment (not a passing interim)
+      if (armed && heard && quiet >= 600 && findSendWord(message()) >= 0) { finish(); return; }
+      if (armed && quiet >= pauseMs.current) {
+        if (findWake && !message() && following()) return; // follow-up: keep listening
         // called but said nothing more: go back to waiting, in a fresh session
         // so the old call in this session's results can't trigger again
         if (findWake && !message()) {
-          armed = false; before = ""; session = ""; from = 0; heard = false;
+          armed = false; before = ""; session = ""; from = 0; heard = false; followUntil = 0;
           try { recog.current?.abort(); } catch { /* ended */ }
           return;
         }
@@ -764,7 +795,7 @@ export function useApexVoice() {
       recog.current = null;
       finishListen.current = null;
       setInterim("");
-      const msg = armed ? message() : "";
+      const msg = armed ? outgoing() : "";
       if (msg) void sendRef.current(msg);
       else setState("idle");
     };
@@ -788,6 +819,11 @@ export function useApexVoice() {
         listenFails.current = 0;
         let all = "";
         for (let i = 0; i < e.results.length; i++) all += e.results[i][0].transcript;
+        // follow-up window over with nothing said: wait for the call again. Checked
+        // here too - a background tab's ticker may run only once a minute.
+        if (armed && findWake && followUntil && !message() && Date.now() > followUntil + 1_500) {
+          armed = false; followUntil = 0; from = 0;
+        }
         session = all.trim();
         if (!armed && findWake) {
           const full = text();
@@ -800,6 +836,9 @@ export function useApexVoice() {
         heard = true;
         lastHeard = Date.now();
         show();
+        // "…tečka" as a final result: send now, without waiting for the ticker
+        const last = e.results[e.results.length - 1];
+        if (last?.isFinal && findSendWord(message()) >= 0) finish();
       };
       bind(r);
       recog.current = r;
@@ -826,7 +865,7 @@ export function useApexVoice() {
         else { const t = text(); before = t.slice(-60); from = 0; }
         session = "";
         const idle = Date.now() - lastHeard;
-        if (!done && (!armed || (heard ? idle < pauseMs.current : idle < 8_000))) start();
+        if (!done && (!armed || (heard ? idle < pauseMs.current : idle < 8_000 || following()))) start();
         else end();
       };
     };
@@ -844,7 +883,7 @@ export function useApexVoice() {
    * whatever the dictation engine) - an always-open recorder would upload all
    * room sound to OpenAI. */
   const listenHandsFree = useCallback(() => {
-    if (wakeOn.current && caps.recognition) listenBrowser({ wake: true });
+    if (wakeOn.current && caps.recognition) listenBrowser({ wake: true, followUpMs: Math.max(0, followUpUntil.current - Date.now()) });
     else listen();
   }, [listen, listenBrowser, caps.recognition]);
 
@@ -888,6 +927,7 @@ export function useApexVoice() {
 
   const stop = useCallback(() => {
     if (rtOn) rtStop("user");
+    followUpUntil.current = 0;
     stopAll();
     setPartial("");
     setState("idle");
@@ -899,6 +939,7 @@ export function useApexVoice() {
     save(HANDS_FREE_KEY, on ? "1" : "0");
     listenFails.current = 0;
     if (on) setError(null);
+    else followUpUntil.current = 0;
     if (voiceMode === "realtime") return; // the call is continuous anyway
     if (on) {
       if (state === "idle" && canListen) listenHandsFree();

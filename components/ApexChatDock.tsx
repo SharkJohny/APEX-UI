@@ -275,7 +275,7 @@ export default function ApexChatDock({ voice, pending, onOpenDeck, onOpenSetting
             ? "V režimu Realtime poslouchám průběžně po celý rozhovor."
             : canListen
             ? wake
-              ? (handsFree ? "Poslouchám a čekám na oslovení – pak zapisuju a po pauze odešlu. Klikni pro vypnutí." : "Trvalé poslouchání na oslovení: reaguju, až mě oslovíš jménem.")
+              ? (handsFree ? "Poslouchám a čekám na oslovení – pak zapisuju a po pauze (nebo slovu „tečka“) odešlu. Po odpovědi chvíli poslouchám i bez oslovení. Klikni pro vypnutí." : "Trvalé poslouchání na oslovení: reaguju, až mě oslovíš jménem.")
               : (handsFree ? "Trvalé poslouchání je zapnuté – po každé odpovědi poslouchám dál. Klikni pro vypnutí." : "Trvalé poslouchání: mluv, pauzou odešli, po odpovědi poslouchám dál.")
             : "Prohlížeč neumí rozpoznávat řeč"}
           style={{

@@ -200,3 +200,27 @@ export function makeWakeMatcher(words: string[]): (text: string) => number {
     return m ? m.index + m[0].length : -1;
   };
 }
+
+/* ── send word ──
+ * "…a pošli to Petrovi, tečka" - a closing word that sends the dictation at
+ * once instead of waiting out the pause. Same folding as the wake word, but
+ * the word has to end the transcript (trailing punctuation allowed).
+ * Returns where the message ends (the word cut off), or -1. */
+export function makeSendWordMatcher(words: string[]): (text: string) => number {
+  const alts = words.map((w) => fold(w.trim())).filter((w) => w.length >= 2)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"));
+  if (!alts.length) return () => -1;
+  const re = new RegExp(`(?:^|[\\s,;:-]+)(?:${alts.join("|")})[\\s.!?,]*$`, "u");
+  return (text: string) => {
+    const m = re.exec([...text].length === text.length ? fold(text) : text.toLowerCase());
+    return m ? m.index : -1;
+  };
+}
+
+/* Drops a call the owner said anyway ("Apexi, …") when Apex was already
+ * listening without one - only when it opens the message. */
+export function stripLeadingCall(text: string, findWake: (text: string) => number): string {
+  const at = findWake(text);
+  if (at < 0 || text.slice(0, at).trim().split(/\s+/).length > 1) return text;
+  return text.slice(at).trim();
+}

@@ -137,6 +137,8 @@ const GROUPS: GroupDef[] = [
       },
       { key: "APEX_WAKE", label: "Trvalé poslouchání čeká na oslovení", type: "bool", default: "0", help: "Ucho v chatu pak poslouchá pořád, ale reaguje, až uslyší oslovení (pípnutí), a teprve potom zapisuje. Používá rozpoznávání řeči v Chrome." },
       { key: "APEX_WAKE_WORDS", label: "Oslovení", type: "text", default: "Apex", placeholder: "Apex, Jarvis", help: "Jedno nebo víc jmen oddělených čárkou. Koncovky (Apexi, Apexe) a diakritika nevadí." },
+      { key: "APEX_FOLLOWUP_S", label: "Po odpovědi poslouchám bez oslovení (s)", type: "number", min: 0, max: 120, default: "30", help: "Když Apex domluví, můžeš tak dlouho rovnou mluvit dál, bez „Apexi“. Pak zase čeká na oslovení. 0 = vypnuto." },
+      { key: "APEX_SEND_WORDS", label: "Slovo pro okamžité odeslání", type: "text", default: "tečka", placeholder: "tečka, odešli", help: "Řekneš-li ho na konci diktování, zpráva odejde hned (samotné slovo se nepošle). Víc slov odděl čárkou, prázdné = vypnuto." },
       { key: "APEX_VOICE_PAUSE_S", label: "Pauza před odesláním diktování (s)", type: "number", min: 1, max: 30, default: "6", help: "Jak dlouho smíš při diktování mlčet, než Apex zprávu odešle. Enter nebo klepnutí na orb odešle hned." },
       { key: "APEX_STT", label: "Rozpoznávání řeči", type: "select", default: "browser", options: [{ value: "browser", label: "Prohlížeč" }, { value: "openai", label: "OpenAI přepis" }] },
       {
